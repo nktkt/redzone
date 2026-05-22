@@ -38,7 +38,8 @@
 //   0        all 8 bytes of the chunk are addressable
 //   1..7     only the first k bytes are addressable (partial tail)
 //   negative poisoned -- the whole chunk is off-limits
-#define RZ_POISON ((int8_t)0xFA)    // red zone
+#define RZ_POISON ((int8_t)0xFA)    // heap red zone
+#define STACK_RZ ((int8_t)0xF1)     // stack red zone
 #define FREED_POISON ((int8_t)0xFD) // freed memory
 
 //===----------------------------------------------------------------------===//
@@ -249,6 +250,35 @@ void __redzone_free(void *ptr) {
 }
 
 //===----------------------------------------------------------------------===//
+// Stack red zones
+//===----------------------------------------------------------------------===//
+//
+// The pass enlarges each static stack allocation with red zones and calls these
+// to poison/unpoison the surrounding shadow. `base` points at the enlarged
+// allocation; `user_size` is the original variable's size. No table entry is
+// made -- stack lifetimes are scoped, and the report path handles them without
+// one. Leaving restores the shadow so the stack slot can be reused.
+
+void __redzone_stack_enter(void *base_v, size_t user_size) {
+  uintptr_t base = (uintptr_t)base_v;
+  uintptr_t user = base + REDZONE_SIZE;
+  size_t total = user_size + 2 * REDZONE_SIZE;
+  set_shadow_range(base, total, STACK_RZ);
+  size_t aligned = user_size & ~(size_t)7;
+  size_t rem = user_size & 7;
+  if (aligned)
+    set_shadow_range(user, aligned, 0);
+  if (rem)
+    set_shadow_byte(user + aligned, (int8_t)rem);
+}
+
+void __redzone_stack_leave(void *base_v, size_t user_size) {
+  uintptr_t base = (uintptr_t)base_v;
+  size_t total = user_size + 2 * REDZONE_SIZE;
+  set_shadow_range(base, total, 0); // restore: addressable again for reuse
+}
+
+//===----------------------------------------------------------------------===//
 // The check
 //===----------------------------------------------------------------------===//
 
@@ -282,6 +312,17 @@ static void report(const char *kind, const void *addr, size_t size, int is_write
   abort();
 }
 
+// Report for a non-heap region (stack/global) where we have no table entry.
+static void report_simple(const char *kind, const void *addr, size_t size,
+                          int is_write, const char *file, int line) {
+  fprintf(stderr, "==redzone ERROR: %s\n", kind);
+  fprintf(stderr, "  %s of size %zu at %p\n", is_write ? "WRITE" : "READ", size,
+          addr);
+  if (file)
+    fprintf(stderr, "    at %s:%d\n", file, line);
+  abort();
+}
+
 void __redzone_check(const void *addr, size_t size, int is_write,
                      const char *file, int line) {
   if (size == 0)
@@ -294,12 +335,16 @@ void __redzone_check(const void *addr, size_t size, int is_write,
 
   // Slow path: only reached on a violation. Classify it with the table.
   Block *b = find_block(a);
-  if (!b)
-    return; // poisoned but untracked -- be conservative and allow
-  if (b->freed)
-    report("use-after-free", addr, size, is_write, file, line, b);
-  else
-    report("heap-buffer-overflow", addr, size, is_write, file, line, b);
+  if (b) {
+    if (b->freed)
+      report("use-after-free", addr, size, is_write, file, line, b);
+    else
+      report("heap-buffer-overflow", addr, size, is_write, file, line, b);
+    return;
+  }
+  // Not a tracked heap block: a poisoned stack red zone (globals not yet
+  // covered). Report with the faulting location.
+  report_simple("stack-buffer-overflow", addr, size, is_write, file, line);
 }
 
 //===----------------------------------------------------------------------===//

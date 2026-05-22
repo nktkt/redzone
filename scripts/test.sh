@@ -30,6 +30,7 @@ CASES=(
   "double_free.c:double-free"
   "invalid_free.c:invalid-free"
   "memory_leak.c:memory-leak"
+  "stack_overflow.c:stack-buffer-overflow"
 )
 
 # Build the pass plugin only if it isn't already present.

@@ -29,6 +29,13 @@ void __redzone_free(void *ptr);
 void __redzone_check(const void *addr, size_t size, int is_write,
                      const char *file, int line);
 
+// Poison/unpoison the red zones around an enlarged stack allocation. The pass
+// calls __redzone_stack_enter at function entry and __redzone_stack_leave
+// before each return. `base` points at the enlarged allocation; `user_size` is
+// the original variable's size.
+void __redzone_stack_enter(void *base, size_t user_size);
+void __redzone_stack_leave(void *base, size_t user_size);
+
 #ifdef __cplusplus
 }
 #endif

@@ -50,7 +50,8 @@ Make it correct and fast enough to point at real code.
   shadow chunks; table kept for error-path reports only.)
 - **Full allocator coverage** — `calloc`, `realloc`, `aligned_alloc`,
   `free`, and C++ `new`/`delete`.
-- **Stack buffer overflow** detection (red zones around stack allocations).
+- ✅ **Stack buffer overflow** detection (v0.6): the pass wraps each static
+  stack allocation with red zones, poisoned on entry and restored on return.
 - **Global buffer overflow** detection.
 - ✅ **Memory leak detection** at exit (v0.5): un-freed blocks are reported with
   their allocation site; the process exits nonzero. (Reachability-aware analysis
@@ -141,8 +142,10 @@ Run alongside every horizon, not in sequence.
 
 ## Now / Next / Later
 
-- **Done:** `v0.1`–`v0.3` (overflow + use-after-free detection, readable
-  reports, 10-case test suite); `v0.4` shadow memory (O(1) per-access check).
-- **Now:** broaden detection — stack/global buffer overflows, then memory leaks.
+- **Done:** `v0.1`–`v0.3` (heap-overflow + use-after-free, readable reports,
+  test suite); `v0.4` shadow memory (O(1) check); `v0.5` leak detection; `v0.6`
+  stack-buffer-overflow. Suite is 12/12.
+- **Now:** finish Horizon 2 — global buffer overflows; fuller allocator coverage
+  (`calloc`/`realloc`).
 - **Next:** developer experience — a CLI wrapper, SARIF/JSON output, CI recipes.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.
