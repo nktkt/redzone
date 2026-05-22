@@ -30,3 +30,9 @@ jobs:
         # test.sh builds build/libRedzonePass.so on first run, then instruments
         # and runs every example, asserting the expected outcome.
         run: ./scripts/test.sh
+
+      - name: Validate machine-readable output formats
+        # test_formats.sh re-builds the examples into a temp dir and checks that
+        # REDZONE_FORMAT=json / =sarif emit well-formed findings with the right
+        # error-kind / ruleId (and that a clean program emits none).
+        run: ./scripts/test_formats.sh

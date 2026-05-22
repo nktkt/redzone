@@ -103,7 +103,8 @@ REDZONE_FORMAT=sarif ./scripts/redzone run prog.c   # a SARIF 2.1.0 document
 
 Findings are written to **stderr** (kept separate from the program's own
 stdout). The SARIF output can be uploaded to GitHub code scanning to annotate
-pull requests.
+pull requests — see **[docs/ci-integration.md](docs/ci-integration.md)** for a
+ready-to-use GitHub Actions workflow.
 
 ## Roadmap
 

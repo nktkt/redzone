@@ -71,8 +71,9 @@ Turn a compiler pass into a product people choose to use.
 - ✅ **Machine-readable output** (`REDZONE_FORMAT=json|sarif`) — JSON Lines and
   SARIF 2.1.0, emitted to stderr (v0.8).
 - **Build-system recipes** — CMake, Bazel, Make.
-- ✅ **CI** — GitHub Actions builds the pass and runs the test suite on every
-  push/PR (macOS + Homebrew LLVM). PR annotations via SARIF still to come.
+- ✅ **CI** — GitHub Actions builds the pass and runs the test suite + the
+  machine-readable-format checks on every push/PR (macOS + Homebrew LLVM). A
+  SARIF→code-scanning recipe is in `docs/ci-integration.md`.
 - **Docs site** — tutorials, examples, troubleshooting.
 
 **Exit criteria:** a new user adopts redzone in an existing project in < 15 min.
@@ -148,10 +149,10 @@ Run alongside every horizon, not in sequence.
 - **Done:** `v0.1`–`v0.3` (heap-overflow + use-after-free, readable reports,
   test suite); `v0.4` shadow memory (O(1) check); `v0.5` leak detection; `v0.6`
   stack-buffer-overflow. Suite is 12/12.
-- **Done (Horizon 3):** CLI wrapper (`build`/`run`); CI running the suite on
-  every push; machine-readable output (`REDZONE_FORMAT=json|sarif`).
-- **Now:** upload SARIF to GitHub code scanning (PR annotations); build-system
-  recipes (CMake/Make).
+- **Done (Horizon 3):** CLI wrapper (`build`/`run`); CI running the suite +
+  format checks; machine-readable output (`REDZONE_FORMAT=json|sarif`) with a
+  SARIF→GitHub-code-scanning guide.
+- **Now:** build-system recipes (drop-in CMake/Make integration).
 - **Deferred Horizon 2:** global buffer overflows; `aligned_alloc`/`new`/`delete`;
   benchmarks.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.
