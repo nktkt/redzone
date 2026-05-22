@@ -52,7 +52,9 @@ Make it correct and fast enough to point at real code.
   `aligned_alloc` and C++ `new`/`delete` remain.
 - ✅ **Stack buffer overflow** detection (v0.6): the pass wraps each static
   stack allocation with red zones, poisoned on entry and restored on return.
-- **Global buffer overflow** detection.
+- ✅ **Global buffer overflow** detection (v0.9): the pass wraps eligible
+  static/internal globals in red-zone-padded structs and poisons them via a
+  module constructor. External (non-static) globals remain.
 - ✅ **Memory leak detection** at exit (v0.5): un-freed blocks are reported with
   their allocation site; the process exits nonzero. (Reachability-aware analysis
   is a later refinement.)
@@ -153,8 +155,8 @@ Run alongside every horizon, not in sequence.
   stack-buffer-overflow. Suite is 12/12.
 - **Horizon 3 done:** CLI wrapper; CI (suite + format + integration checks);
   machine-readable output with a SARIF→code-scanning guide; CMake & Make recipes.
-- **Now:** global-variable buffer-overflow detection — the last detection gap
-  (heap and stack are covered; this is the deferred Horizon 2 item).
+- **Now:** smaller gaps — external (non-static) globals, `aligned_alloc` / C++
+  `new`/`delete`, performance benchmarks, and Bazel. Then Horizon 4 (scale).
 - **Deferred Horizon 2:** global buffer overflows; `aligned_alloc`/`new`/`delete`;
   benchmarks.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.

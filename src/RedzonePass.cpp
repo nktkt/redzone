@@ -27,6 +27,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
@@ -38,7 +39,9 @@
 #include "llvm/Passes/PassPlugin.h" // LLVM <= 21
 #endif
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
+#include <algorithm>
 #include <optional>
 #include <utility>
 
@@ -73,6 +76,8 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         "__redzone_calloc", PtrTy, I64, I64, PtrTy, I32);
     FunctionCallee RzRealloc = M.getOrInsertFunction(
         "__redzone_realloc", PtrTy, PtrTy, I64, PtrTy, I32);
+    FunctionCallee GlobalRegister =
+        M.getOrInsertFunction("__redzone_global_register", VoidTy, PtrTy, I64);
 
     // Deduplicated filename string globals, keyed by filename.
     StringMap<Constant *> StrCache;
@@ -92,7 +97,72 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       return {ConstantPointerNull::get(PtrTy), ConstantInt::get(I32, 0)};
     };
 
-    unsigned checks = 0, mallocs = 0, frees = 0, stackVars = 0;
+    unsigned checks = 0, mallocs = 0, frees = 0, stackVars = 0, globals = 0;
+
+    // Wrap eligible globals (defined, internal-linkage, non-const) with red
+    // zones, and install a constructor that poisons them at startup. Internal
+    // linkage keeps this safe: the symbol isn't referenced from other TUs, so
+    // changing its type/address can't break anything outside this module.
+    {
+      SmallVector<GlobalVariable *, 8> targets;
+      for (GlobalVariable &G : M.globals()) {
+        if (G.isDeclaration() || G.isConstant() || G.isThreadLocal())
+          continue;
+        if (!G.hasInitializer() || !G.hasLocalLinkage() || G.hasSection())
+          continue;
+        if (G.getName().starts_with("llvm.") ||
+            G.getName().starts_with("__redzone"))
+          continue;
+        Type *T = G.getValueType();
+        if (!T->isSized())
+          continue;
+        TypeSize TS = DL.getTypeAllocSize(T);
+        if (TS.isScalable())
+          continue;
+        if (G.getAlign() && G.getAlign()->value() > kRedzone)
+          continue;
+        targets.push_back(&G);
+      }
+
+      SmallVector<std::pair<Constant *, uint64_t>, 8> toRegister;
+      for (GlobalVariable *G : targets) {
+        Type *T = G->getValueType();
+        uint64_t S = DL.getTypeAllocSize(T).getFixedValue();
+        uint64_t pad = (8 - (S % 8)) % 8; // so data+rightzone is 8-aligned
+        ArrayType *LRZTy = ArrayType::get(Int8Ty, kRedzone);
+        ArrayType *RRZTy = ArrayType::get(Int8Ty, kRedzone + pad);
+        StructType *NTy = StructType::get(Ctx, {LRZTy, T, RRZTy});
+        Constant *Init = ConstantStruct::get(
+            NTy, {ConstantAggregateZero::get(LRZTy), G->getInitializer(),
+                  ConstantAggregateZero::get(RRZTy)});
+        auto *NG = new GlobalVariable(M, NTy, /*isConstant=*/false,
+                                      G->getLinkage(), Init, G->getName() + ".rz");
+        MaybeAlign A = G->getAlign();
+        NG->setAlignment(Align(std::max<uint64_t>(kRedzone, A ? A->value() : 1)));
+
+        // Point all users at the data field (struct index 1).
+        Constant *Idx[] = {ConstantInt::get(I32, 0), ConstantInt::get(I32, 1)};
+        Constant *DataPtr = ConstantExpr::getInBoundsGetElementPtr(NTy, NG, Idx);
+        G->replaceAllUsesWith(DataPtr);
+        NG->takeName(G);
+        G->eraseFromParent();
+
+        toRegister.push_back({DataPtr, S});
+        ++globals;
+      }
+
+      if (!toRegister.empty()) {
+        FunctionType *CtorTy = FunctionType::get(VoidTy, false);
+        Function *Ctor = Function::Create(CtorTy, GlobalValue::InternalLinkage,
+                                          "__redzone_global_ctor", &M);
+        IRBuilder<> CB(BasicBlock::Create(Ctx, "entry", Ctor));
+        for (auto &PR : toRegister)
+          CB.CreateCall(GlobalRegister,
+                        {PR.first, ConstantInt::get(I64, PR.second)});
+        CB.CreateRetVoid();
+        appendToGlobalCtors(M, Ctor, /*priority=*/0);
+      }
+    }
 
     for (Function &F : M) {
       if (F.isDeclaration())
@@ -222,10 +292,10 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
     }
 
     errs() << "[redzone] instrumented " << checks << " access(es); " << stackVars
-           << " stack var(s); redirected " << mallocs << " alloc / " << frees
-           << " free call(s)\n";
+           << " stack var(s); " << globals << " global(s); redirected " << mallocs
+           << " alloc / " << frees << " free call(s)\n";
 
-    bool Changed = checks || mallocs || frees || stackVars;
+    bool Changed = checks || mallocs || frees || stackVars || globals;
     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
   }
 

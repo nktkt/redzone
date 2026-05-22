@@ -41,6 +41,7 @@
 //   negative poisoned -- the whole chunk is off-limits
 #define RZ_POISON ((int8_t)0xFA)    // heap red zone
 #define STACK_RZ ((int8_t)0xF1)     // stack red zone
+#define GLOBAL_RZ ((int8_t)0xF9)    // global red zone
 #define FREED_POISON ((int8_t)0xFD) // freed memory
 
 //===----------------------------------------------------------------------===//
@@ -443,6 +444,29 @@ void __redzone_stack_leave(void *base_v, size_t user_size) {
 }
 
 //===----------------------------------------------------------------------===//
+// Global red zones
+//===----------------------------------------------------------------------===//
+//
+// The pass wraps each eligible global in a struct with red zones on both sides
+// and installs a module constructor that calls this once per global at startup.
+// `data` points at the variable's data; `size` is its size. The surrounding
+// red-zone bytes physically belong to the wrapper struct, so poisoning their
+// shadow never touches a neighbouring symbol.
+
+void __redzone_global_register(void *data_v, size_t size) {
+  uintptr_t data = (uintptr_t)data_v;
+  uintptr_t base = data - REDZONE_SIZE;
+  size_t total = size + 2 * REDZONE_SIZE;
+  set_shadow_range(base, total, GLOBAL_RZ);
+  size_t aligned = size & ~(size_t)7;
+  size_t rem = size & 7;
+  if (aligned)
+    set_shadow_range(data, aligned, 0);
+  if (rem)
+    set_shadow_byte(data + aligned, (int8_t)rem);
+}
+
+//===----------------------------------------------------------------------===//
 // The check
 //===----------------------------------------------------------------------===//
 
@@ -531,9 +555,15 @@ void __redzone_check(const void *addr, size_t size, int is_write,
       report("heap-buffer-overflow", addr, size, is_write, file, line, b);
     return;
   }
-  // Not a tracked heap block: a poisoned stack red zone (globals not yet
-  // covered). Report with the faulting location.
-  report_simple("stack-buffer-overflow", addr, size, is_write, file, line);
+  // Not a tracked heap block: a poisoned stack or global red zone. Read the
+  // poison code (from whichever checked byte carries it) to name it precisely.
+  int8_t s1 = shadow_load(a);
+  int8_t s2 = shadow_load(a + size - 1);
+  int8_t code = (s1 < 0) ? s1 : (s2 < 0 ? s2 : 0);
+  const char *kind = (code == GLOBAL_RZ)  ? "global-buffer-overflow"
+                     : (code == STACK_RZ) ? "stack-buffer-overflow"
+                                          : "buffer-overflow";
+  report_simple(kind, addr, size, is_write, file, line);
 }
 
 //===----------------------------------------------------------------------===//

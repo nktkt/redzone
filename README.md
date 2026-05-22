@@ -12,9 +12,10 @@ The name comes from the *red zones*: poisoned guard regions placed around every 
 
 | Detected ✅ | Out of scope (for now) ❌ |
 |---|---|
-| Heap buffer overflow (read/write past a `malloc`'d region) | Global buffer overflows |
+| Heap buffer overflow (read/write past a `malloc`'d region) | External (non-static) globals |
 | Stack buffer overflow (past a fixed-size local) | Data races (multithreading) |
-| Use-after-free (read/write after a region is freed) | Performance optimization |
+| Global buffer overflow (past a static/internal global) | Performance optimization |
+| Use-after-free (read/write after a region is freed) | |
 | Double-free and invalid-free | |
 | Memory leaks (allocations never freed, reported at exit) | |
 
@@ -43,7 +44,7 @@ Keeping the scope tight is deliberate: nail heap bugs first, expand later.
                          report + abort
 ```
 
-1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write, file, line)`. It also redirects user `malloc`/`calloc`/`realloc`/`free` calls to the runtime's versions (forwarding the allocation-site `file:line`), and wraps each static stack allocation with red zones — poisoned at function entry, restored before each return — so stack overflows are caught too.
+1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write, file, line)`. It also redirects user `malloc`/`calloc`/`realloc`/`free` calls to the runtime's versions (forwarding the allocation-site `file:line`), wraps each static stack allocation with red zones (poisoned at function entry, restored before each return), and wraps eligible static/internal globals with red zones (poisoned by a startup constructor) — so stack and global overflows are caught too.
 2. **Runtime library** (C):
    - `__redzone_malloc` allocates the requested bytes plus surrounding **red zones**, marks the user region addressable and the red zones poisoned in **shadow memory**, and records `{base, size, freed?, alloc site}` in a metadata table.
    - `__redzone_free` quarantines the block and poisons its shadow as freed, so later access is detectable as **use-after-free**.
@@ -150,13 +151,14 @@ and write), double-free, and invalid-free, plus several valid programs.
 
 ## Status
 
-🚧 Early development. **Through `v0.7`:** redzone detects **heap-** and
-**stack-buffer-overflow**, **use-after-free**, **double-free**, **invalid-free**
-and **memory leaks** across `malloc`/`calloc`/`realloc`/`free`, reporting the
-faulting `file:line` (plus the allocation site for heap bugs). The per-access
-check uses **shadow memory** (O(1)). A 14-case suite (`./scripts/test.sh`)
-passes. Next up: developer-experience work — a CLI wrapper, SARIF/JSON output,
-and CI recipes (Horizon 3).
+🚧 Active development. **Through `v0.9`:** redzone detects **heap-**, **stack-**
+and **global-buffer-overflow**, **use-after-free**, **double-free**,
+**invalid-free** and **memory leaks** across `malloc`/`calloc`/`realloc`/`free`,
+reporting the faulting `file:line` (plus the allocation site for heap bugs). The
+per-access check uses **shadow memory** (O(1)). It ships a `redzone` CLI,
+text/JSON/SARIF output, CMake & Make integration, and a 15-case suite plus
+format and integration checks in CI. Remaining gaps: external (non-static)
+globals, `aligned_alloc` / C++ `new`/`delete`, and threading.
 
 ## License
 

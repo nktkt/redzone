@@ -33,6 +33,7 @@ CASES=(
   "stack_overflow.c:stack-buffer-overflow"
   "calloc_overflow.c:heap-buffer-overflow"
   "realloc_grow.c:OK"
+  "global_overflow.c:global-buffer-overflow"
 )
 
 # Build the pass plugin only if it isn't already present.

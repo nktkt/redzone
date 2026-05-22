@@ -38,6 +38,11 @@ void __redzone_check(const void *addr, size_t size, int is_write,
 void __redzone_stack_enter(void *base, size_t user_size);
 void __redzone_stack_leave(void *base, size_t user_size);
 
+// Poison the red zones around a global variable the pass has wrapped. Called
+// once per global from a module constructor the pass installs. `data` points at
+// the variable's data; `size` is its size.
+void __redzone_global_register(void *data, size_t size);
+
 #ifdef __cplusplus
 }
 #endif
