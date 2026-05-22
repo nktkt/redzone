@@ -70,7 +70,9 @@ Turn a compiler pass into a product people choose to use.
 - **Suppression files** — silence known/third-party issues.
 - ✅ **Machine-readable output** (`REDZONE_FORMAT=json|sarif`) — JSON Lines and
   SARIF 2.1.0, emitted to stderr (v0.8).
-- **Build-system recipes** — CMake, Bazel, Make.
+- ✅ **Build-system recipes** — CMake (`cmake/Redzone.cmake`) and Make, both via
+  `-fpass-plugin`, with runnable examples and a guide (`docs/build-integration.md`),
+  exercised in CI. Bazel later.
 - ✅ **CI** — GitHub Actions builds the pass and runs the test suite + the
   machine-readable-format checks on every push/PR (macOS + Homebrew LLVM). A
   SARIF→code-scanning recipe is in `docs/ci-integration.md`.
@@ -149,10 +151,10 @@ Run alongside every horizon, not in sequence.
 - **Done:** `v0.1`–`v0.3` (heap-overflow + use-after-free, readable reports,
   test suite); `v0.4` shadow memory (O(1) check); `v0.5` leak detection; `v0.6`
   stack-buffer-overflow. Suite is 12/12.
-- **Done (Horizon 3):** CLI wrapper (`build`/`run`); CI running the suite +
-  format checks; machine-readable output (`REDZONE_FORMAT=json|sarif`) with a
-  SARIF→GitHub-code-scanning guide.
-- **Now:** build-system recipes (drop-in CMake/Make integration).
+- **Horizon 3 done:** CLI wrapper; CI (suite + format + integration checks);
+  machine-readable output with a SARIF→code-scanning guide; CMake & Make recipes.
+- **Now:** global-variable buffer-overflow detection — the last detection gap
+  (heap and stack are covered; this is the deferred Horizon 2 item).
 - **Deferred Horizon 2:** global buffer overflows; `aligned_alloc`/`new`/`delete`;
   benchmarks.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.

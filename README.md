@@ -137,7 +137,8 @@ cmake --build build
 ```
 
 This produces the pass plugin at `build/libRedzonePass.so`. See **Usage** above
-to run it, or just `./scripts/demo.sh`.
+to run it, or just `./scripts/demo.sh`. To wire redzone into your own CMake or
+Make project, see **[docs/build-integration.md](docs/build-integration.md)**.
 
 ## Testing
 

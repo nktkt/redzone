@@ -1,0 +1,4 @@
+# Build artifacts produced by this example's Makefile.
+/demo
+*.o
+*.dSYM/
