@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+#
+# redzone — user-facing CLI for the redzone memory-safety detector.
+#
+# Hides the manual build pipeline (clang -emit-llvm | opt -passes=redzone |
+# link with the runtime). Auto-builds the pass plugin the first time it's run.
+#
+# Usage:
+#   redzone build <src.c> [more.c ...] [-o OUTPUT]
+#   redzone run   <src.c> [more.c ...] [-o OUTPUT] [-- ARGS...]
+#   redzone -h | --help
+#
+set -euo pipefail
+
+# --- locate the repo root from this script's own location -------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PLUGIN="$ROOT/build/libRedzonePass.so"
+RUNTIME="$ROOT/runtime/redzone_rt.c"
+
+PROG="$(basename "$0")"
+
+# --- helpers ----------------------------------------------------------------
+die() {
+  echo "$PROG: error: $*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<EOF
+redzone — a mini AddressSanitizer for C (LLVM-based memory-safety detector)
+
+USAGE:
+  $PROG build <src.c> [more.c ...] [-o OUTPUT]
+      Instrument and link the sources into an executable.
+      Default OUTPUT is the first source's basename without ".c"
+      (placed in the current directory).
+
+  $PROG run <src.c> [more.c ...] [-o OUTPUT] [-- ARGS...]
+      Build (as above) and then run the resulting executable, forwarding
+      any ARGS after "--". The CLI exits with the program's own exit code.
+
+  $PROG -h | --help
+      Show this help.
+
+EXAMPLES:
+  $PROG run examples/valid.c
+  $PROG run examples/heap_overflow.c
+  $PROG build src/a.c src/b.c -o myprog
+  $PROG run myprog.c -- arg1 arg2
+
+A buggy program prints "==redzone ERROR: <kind>" to stderr and aborts with a
+nonzero status; a clean program exits 0. The pass plugin is built automatically
+the first time it is needed.
+EOF
+}
+
+# --- toolchain discovery ----------------------------------------------------
+find_llvm_prefix() {
+  local prefix
+  if prefix="$(brew --prefix llvm 2>/dev/null)" && [[ -n "$prefix" ]]; then
+    echo "$prefix"
+    return 0
+  fi
+  if prefix="$(llvm-config --prefix 2>/dev/null)" && [[ -n "$prefix" ]]; then
+    echo "$prefix"
+    return 0
+  fi
+  return 1
+}
+
+require_tools() {
+  command -v clang >/dev/null 2>&1 || die "clang not found on PATH (install Homebrew LLVM)"
+  command -v opt   >/dev/null 2>&1 || die "opt not found on PATH (install Homebrew LLVM)"
+}
+
+# --- build the pass plugin if it's missing ----------------------------------
+ensure_plugin() {
+  [[ -f "$PLUGIN" ]] && return 0
+
+  echo "$PROG: pass plugin not found, building it..." >&2
+  command -v cmake >/dev/null 2>&1 || die "cmake not found on PATH (needed to build the pass plugin)"
+
+  local llvm_prefix
+  llvm_prefix="$(find_llvm_prefix)" \
+    || die "could not locate LLVM (tried 'brew --prefix llvm' and 'llvm-config --prefix')"
+
+  cmake -S "$ROOT" -B "$ROOT/build" -DCMAKE_PREFIX_PATH="$llvm_prefix" >/dev/null
+  cmake --build "$ROOT/build" >/dev/null
+
+  [[ -f "$PLUGIN" ]] || die "pass plugin build did not produce $PLUGIN"
+}
+
+# --- argument parsing -------------------------------------------------------
+# Populates: SOURCES (array), OUTPUT, PROG_ARGS (array, only for `run`).
+parse_args() {
+  local subcmd="$1"; shift
+  SOURCES=()
+  PROG_ARGS=()
+  OUTPUT=""
+
+  local seen_dashdash=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --)
+        # Everything after "--" is forwarded to the program (run only).
+        seen_dashdash=1
+        shift
+        PROG_ARGS=("$@")
+        break
+        ;;
+      -o)
+        shift
+        [[ $# -gt 0 ]] || die "-o requires an argument"
+        OUTPUT="$1"
+        shift
+        ;;
+      -o*)
+        OUTPUT="${1#-o}"
+        shift
+        ;;
+      -*)
+        die "unknown option '$1' (see '$PROG --help')"
+        ;;
+      *)
+        SOURCES+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ "$seen_dashdash" -eq 1 && "$subcmd" != "run" ]]; then
+    die "'--' (program arguments) is only valid with 'run'"
+  fi
+
+  [[ ${#SOURCES[@]} -gt 0 ]] || die "no source files given (see '$PROG --help')"
+
+  for src in "${SOURCES[@]}"; do
+    [[ -f "$src" ]] || die "source file not found: $src"
+  done
+
+  # Default OUTPUT = first source basename without trailing .c
+  if [[ -z "$OUTPUT" ]]; then
+    local base
+    base="$(basename "${SOURCES[0]}")"
+    OUTPUT="${base%.c}"
+  fi
+}
+
+# --- core: instrument each source and link with the runtime -----------------
+do_build() {
+  require_tools
+  ensure_plugin
+
+  # Note: TMPDIR_RZ is intentionally a global so the EXIT trap can still see it
+  # after this function returns (a `local` would be out of scope by then).
+  TMPDIR_RZ="$(mktemp -d "${TMPDIR:-/tmp}/redzone.XXXXXX")"
+  # Clean up intermediate IR on exit.
+  trap 'rm -rf "$TMPDIR_RZ"' EXIT
+
+  local instr_irs=()
+  local i=0
+  for src in "${SOURCES[@]}"; do
+    local stem
+    stem="$(basename "$src")"
+    stem="${stem%.c}"
+    # Disambiguate sources that share a basename.
+    local ll="$TMPDIR_RZ/${i}_${stem}.ll"
+    local instr="$TMPDIR_RZ/${i}_${stem}.instr.ll"
+
+    clang -g -O0 -S -emit-llvm "$src" -o "$ll"
+    # Instrument; the pass prints a one-line diagnostic to stderr -- keep it
+    # quiet on success, but surface it (and fail) if opt errors.
+    if ! opt -load-pass-plugin="$PLUGIN" -passes=redzone -S "$ll" -o "$instr" \
+         2>"$TMPDIR_RZ/opt.err"; then
+      cat "$TMPDIR_RZ/opt.err" >&2
+      die "instrumentation failed for $src"
+    fi
+    instr_irs+=("$instr")
+    i=$((i + 1))
+  done
+
+  # Link all instrumented IRs together with the runtime. The runtime is
+  # compiled here WITHOUT the pass (we pass the .c straight to clang), so it
+  # does not get instrumented and therefore does not recurse.
+  clang -g "${instr_irs[@]}" "$RUNTIME" -o "$OUTPUT"
+}
+
+# --- subcommands ------------------------------------------------------------
+cmd_build() {
+  parse_args build "$@"
+  do_build
+  echo "$PROG: built $OUTPUT" >&2
+}
+
+cmd_run() {
+  parse_args run "$@"
+  do_build
+
+  # Resolve the binary to an absolute path so it runs regardless of "$OUTPUT"
+  # containing a directory component or not.
+  local bin="$OUTPUT"
+  case "$bin" in
+    /*) ;;                       # already absolute
+    *)  bin="$PWD/$bin" ;;       # relative -> anchor at cwd
+  esac
+
+  # Relax errexit so a buggy program's abort/nonzero exit doesn't kill us
+  # before we capture and propagate its status.
+  #
+  # We run the program inside an inner `bash -c` (which runs it as a *child*,
+  # without exec) so that, when a buggy program dies via SIGABRT, that inner
+  # shell reaps the signal death and exits *normally* with status 128+signo.
+  # Our shell therefore never sees a directly-spawned job die on a signal and
+  # never prints the job-control "Abort trap: 6" notice. We additionally point
+  # the inner shell's own stderr at /dev/null and route the program's real
+  # stderr (e.g. the "==redzone ERROR" report) through fd 3 to our stderr, so
+  # the report is shown while no internal line numbers leak. The PROG_ARGS[@]+...
+  # guard makes expanding an empty array safe under `set -u` (bash 3.2/macOS).
+  set +e
+  bash -c '"$@" 2>&3' redzone-run "$bin" ${PROG_ARGS[@]+"${PROG_ARGS[@]}"} 3>&2 2>/dev/null
+  local code=$?
+  set -e
+
+  exit "$code"
+}
+
+# --- dispatch ---------------------------------------------------------------
+main() {
+  if [[ $# -eq 0 ]]; then
+    usage
+    exit 0
+  fi
+
+  case "$1" in
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+    build)
+      shift
+      cmd_build "$@"
+      ;;
+    run)
+      shift
+      cmd_run "$@"
+      ;;
+    -*)
+      die "unknown option '$1' (see '$PROG --help')"
+      ;;
+    *)
+      die "unknown subcommand '$1' (see '$PROG --help')"
+      ;;
+  esac
+}
+
+main "$@"

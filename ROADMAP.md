@@ -64,7 +64,8 @@ Make it correct and fast enough to point at real code.
 
 Turn a compiler pass into a product people choose to use.
 
-- **CLI / compiler wrapper** — one command to build with redzone enabled.
+- ✅ **CLI / compiler wrapper** (`scripts/redzone`) — `build`/`run` subcommands
+  that automate emit-IR → instrument → link, and build the plugin on first use.
 - **Great reports** — symbolized, colorized, deduplicated, with stack traces.
 - **Suppression files** — silence known/third-party issues.
 - **Machine-readable output** — JSON and **SARIF** for tooling.
@@ -145,8 +146,8 @@ Run alongside every horizon, not in sequence.
 - **Done:** `v0.1`–`v0.3` (heap-overflow + use-after-free, readable reports,
   test suite); `v0.4` shadow memory (O(1) check); `v0.5` leak detection; `v0.6`
   stack-buffer-overflow. Suite is 12/12.
-- **Now:** Horizon 3 (developer experience) — a CLI wrapper, SARIF/JSON output,
-  CI recipes — to make redzone adoptable.
-- **Deferred Horizon 2 items:** global buffer overflows; `aligned_alloc`/`new`/
-  `delete`; performance benchmarks.
+- **Done (Horizon 3):** the `redzone` CLI wrapper (`build`/`run`).
+- **Now:** SARIF/JSON output and a GitHub Actions CI recipe.
+- **Deferred Horizon 2:** global buffer overflows; `aligned_alloc`/`new`/`delete`;
+  benchmarks.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.

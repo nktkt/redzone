@@ -49,15 +49,27 @@ Keeping the scope tight is deliberate: nail heap bugs first, expand later.
 
 ## Usage
 
-The fastest way to see it work is the bundled demo (builds the pass and runs it
-on a valid program, a heap overflow, and a use-after-free):
+The easiest way is the **`redzone` CLI**, which automates the whole pipeline and
+builds the pass plugin on first use:
+
+```bash
+./scripts/redzone run examples/heap_overflow.c   # build + run
+./scripts/redzone build program.c -o program     # just produce an instrumented binary
+./scripts/redzone run program.c -- arg1 arg2     # forward args; exits with the program's code
+```
+
+See `./scripts/redzone --help` for all options. To see every detector at once,
+the bundled demo runs a valid program, a heap overflow, and a use-after-free:
 
 ```bash
 ./scripts/demo.sh
 ```
 
-To run redzone on your own program, instrument the IR with `opt`, then link with
-the runtime (which must be compiled **without** the pass):
+<details>
+<summary>Doing it by hand (what the CLI runs under the hood)</summary>
+
+Instrument the IR with `opt`, then link with the runtime (compiled **without**
+the pass):
 
 ```bash
 clang -g -O0 -S -emit-llvm program.c -o program.ll
@@ -65,6 +77,7 @@ opt -load-pass-plugin=build/libRedzonePass.so -passes=redzone -S program.ll -o p
 clang -g program.instr.ll runtime/redzone_rt.c -o program
 ./program
 ```
+</details>
 
 Example report on a heap overflow:
 
