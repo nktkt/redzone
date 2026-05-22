@@ -124,7 +124,8 @@ Run alongside every horizon, not in sequence.
 - **Testing & correctness** — golden corpus of bad/good programs; track
   false-positive / false-negative rates; differential testing against real
   AddressSanitizer.
-- **Benchmarking** — continuous perf/memory-overhead benchmarks in CI.
+- ✅ **Benchmarking** — `scripts/bench.sh` measures instrumented-vs-baseline
+  overhead (`docs/benchmarks.md`); baseline captured. Wiring it into CI later.
 - **Release engineering** — CI/CD, prebuilt binaries, packaging (Homebrew, apt).
 - **Security & hardening** — the tool itself must be robust against the inputs
   it analyzes.
@@ -155,8 +156,12 @@ Run alongside every horizon, not in sequence.
   stack-buffer-overflow. Suite is 12/12.
 - **Horizon 3 done:** CLI wrapper; CI (suite + format + integration checks);
   machine-readable output with a SARIF→code-scanning guide; CMake & Make recipes.
-- **Now:** smaller gaps — external (non-static) globals, `aligned_alloc` / C++
-  `new`/`delete`, performance benchmarks, and Bazel. Then Horizon 4 (scale).
+- **Now (Horizon 4):** baseline overhead is captured (memory-bound ~140x; see
+  `docs/benchmarks.md`). Next: a **direct-mapped shadow** then **inlining the
+  fast-path check** (`docs/design/inline-fastpath.md`) to drive overhead toward
+  ~2-3x.
+- **Also deferred:** external (non-static) globals, `aligned_alloc` / C++
+  `new`/`delete`, Bazel.
 - **Deferred Horizon 2:** global buffer overflows; `aligned_alloc`/`new`/`delete`;
   benchmarks.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.

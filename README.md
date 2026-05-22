@@ -160,6 +160,11 @@ text/JSON/SARIF output, CMake & Make integration, and a 15-case suite plus
 format and integration checks in CI. Remaining gaps: external (non-static)
 globals, `aligned_alloc` / C++ `new`/`delete`, and threading.
 
+Performance is honest about where it stands: the per-access check is currently an
+out-of-line call plus a hash lookup, so memory-bound code sees large overhead
+(see **[docs/benchmarks.md](docs/benchmarks.md)**). Bringing that down — inlined
+checks over a direct-mapped shadow — is the focus of Horizon 4.
+
 ## License
 
 To be decided.
