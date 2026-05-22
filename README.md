@@ -64,13 +64,17 @@ Example report on a heap overflow:
 
 ## Roadmap
 
+The near-term goal is a correct heap checker; the long-term goal is a scalable,
+production-grade memory-safety platform. See **[ROADMAP.md](ROADMAP.md)** for the
+full long-range plan (Horizons 1–5, scaling strategy, and success metrics).
+
 | Phase | Goal |
 |---|---|
 | 0 | Pass skeleton — print every load/store (prove instrumentation works) |
 | 1 | Runtime + malloc wrapper + red zones → **heap-overflow detection** |
 | 2 | Quarantine on free → **use-after-free detection** |
 | 3 | Use debug info to report `file:line` |
-| 4 (stretch) | Shadow memory, stack/global coverage, leak detection |
+| 4+ | Shadow memory, stack/global coverage, leak detection, CI/scale (see roadmap) |
 
 ## Requirements
 
