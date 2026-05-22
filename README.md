@@ -108,6 +108,14 @@ cmake --build build
 This produces the pass plugin at `build/libRedzonePass.so`. See **Usage** above
 to run it, or just `./scripts/demo.sh`.
 
+## Testing
+
+`./scripts/test.sh` builds and runs a corpus of small programs under
+`examples/`, asserting each expected outcome — clean programs must exit 0, and
+buggy ones must abort with the matching `==redzone ERROR: <kind>`. It covers
+heap-buffer-overflow (read, write, off-by-one, underflow), use-after-free (read
+and write), double-free, and invalid-free, plus several valid programs.
+
 ## Status
 
 🚧 Early development. **Through `v0.3`:** the pass instruments every load/store
