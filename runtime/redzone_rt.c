@@ -108,28 +108,35 @@ static void record_block(uintptr_t real_base, size_t total_size,
 // the check be inlined later (see docs/design/inline-fastpath.md).
 
 #define SHADOW_SCALE 3                              // 8 app bytes : 1 shadow byte
-#define SHADOW_LIMIT ((uintptr_t)1 << 44)           // cover app addresses < 16 TiB
-#define SHADOW_BYTES (SHADOW_LIMIT >> SHADOW_SCALE) // 2 TiB of shadow
+#define SHADOW_LIMIT ((uintptr_t)1 << 47)           // cover the 47-bit user space
+#define SHADOW_BYTES (SHADOW_LIMIT >> SHADOW_SCALE) // 16 TiB of shadow
 
-static int8_t *g_shadow = NULL;
+// Base of the direct-mapped shadow: the shadow byte for `app` is at
+// __redzone_shadow_base + (app >> SHADOW_SCALE). Exported (not static) so the
+// instrumentation pass can load it to inline the fast-path check. Reserved
+// eagerly by a high-priority constructor before any instrumented access runs;
+// covering the whole 47-bit space means the inline path needs no range guard.
+int8_t *__redzone_shadow_base = NULL;
 
 static void shadow_init(void) {
+  if (__redzone_shadow_base)
+    return;
   void *p = mmap(NULL, SHADOW_BYTES, PROT_READ | PROT_WRITE,
                  MAP_ANON | MAP_PRIVATE, -1, 0);
   if (p == MAP_FAILED) {
     fprintf(stderr, "redzone: failed to reserve shadow memory\n");
     abort();
   }
-  g_shadow = (int8_t *)p;
+  __redzone_shadow_base = (int8_t *)p;
 }
 
 static int8_t *shadow_ptr(uintptr_t app) {
-  if (!g_shadow)
+  if (!__redzone_shadow_base)
     shadow_init();
   uintptr_t idx = app >> SHADOW_SCALE;
   if (idx >= SHADOW_BYTES)
     return NULL; // beyond the covered range -> untracked
-  return &g_shadow[idx];
+  return &__redzone_shadow_base[idx];
 }
 
 static int8_t shadow_load(uintptr_t app) {
@@ -597,6 +604,13 @@ static void report_leaks(void) {
 
   fflush(NULL); // flush the program's own output before forcing the exit code
   _Exit(1);     // signal the leak via a nonzero status
+}
+
+// Reserve the shadow before anything else runs (priority 101 = earliest user
+// constructor slot), so the inlined fast-path check can load
+// __redzone_shadow_base unconditionally.
+__attribute__((constructor(101))) static void __redzone_shadow_startup(void) {
+  shadow_init();
 }
 
 __attribute__((constructor)) static void redzone_init(void) {

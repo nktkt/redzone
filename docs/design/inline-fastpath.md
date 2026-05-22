@@ -1,7 +1,8 @@
 # Design note: inline fast-path checks + direct-mapped shadow (Horizon 4)
 
-Status: **in progress.** Phase 1 (direct-mapped shadow) shipped in v0.10; Phase 2
-(inlining the fast-path check) is next. Measured with `scripts/bench.sh`.
+Status: **done.** Phase 1 (direct-mapped shadow, v0.10) and Phase 2 (inlined
+fast-path check, v0.11) are both shipped. Compute-bound overhead fell from ~14x
+to ~1.8x; see `docs/benchmarks.md`.
 
 ## Problem
 
@@ -77,8 +78,9 @@ ok:
 
 1. ✅ Runtime: hash shadow → **direct-mapped** shadow; keep `__redzone_check` a
    call (v0.10; ~15–20% win — confirms the call dominates).
-2. Pass: **inline** the fast path; demote `__redzone_check` to the slow-path
-   `__redzone_report`. Measure.
+2. ✅ Pass: **inline** the fast path (v0.11). `__redzone_check` is now the slow
+   path, called only on a flagged byte (it re-validates before reporting).
+   compute 11x→1.8x, gather 123x→34x; `alloc_churn` unchanged (allocator-bound).
 3. (Stretch) Skip provably-safe accesses statically; coalesce checks; this is the
    selective-instrumentation work also listed under Horizon 4.
 

@@ -160,10 +160,10 @@ text/JSON/SARIF output, CMake & Make integration, and a 15-case suite plus
 format and integration checks in CI. Remaining gaps: external (non-static)
 globals, `aligned_alloc` / C++ `new`/`delete`, and threading.
 
-Performance is honest about where it stands: the per-access check is an
-out-of-line function call (over a direct-mapped shadow), so memory-bound code
-sees large overhead today (see **[docs/benchmarks.md](docs/benchmarks.md)**).
-Inlining that check — the next Horizon 4 step — is expected to cut it sharply.
+Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
+so compute-bound code runs at ~1.8× and load-bound code far below its earlier
+cost (see **[docs/benchmarks.md](docs/benchmarks.md)**). The allocator path is the
+next optimization target.
 
 ## License
 

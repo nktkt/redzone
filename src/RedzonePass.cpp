@@ -39,6 +39,7 @@
 #include "llvm/Passes/PassPlugin.h" // LLVM <= 21
 #endif
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <algorithm>
@@ -78,6 +79,8 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         "__redzone_realloc", PtrTy, PtrTy, I64, PtrTy, I32);
     FunctionCallee GlobalRegister =
         M.getOrInsertFunction("__redzone_global_register", VoidTy, PtrTy, I64);
+    // Base of the direct-mapped shadow, defined by the runtime; loaded inline.
+    Constant *ShadowBaseGV = M.getOrInsertGlobal("__redzone_shadow_base", PtrTy);
 
     // Deduplicated filename string globals, keyed by filename.
     StringMap<Constant *> StrCache;
@@ -244,10 +247,33 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         }
         uint64_t Size = DL.getTypeStoreSize(AccessTy).getFixedValue();
 
-        IRBuilder<> B(I); // insert the check immediately before the access
+        IRBuilder<> B(I);
         auto [FileC, LineC] = getLoc(B, I);
-        B.CreateCall(Check, {Ptr, ConstantInt::get(I64, Size),
-                             ConstantInt::get(I32, IsWrite ? 1 : 0), FileC, LineC});
+
+        // Inlined fast path. A byte at offset o within its 8-byte chunk is
+        // poisoned iff shadow != 0 && o >= shadow (shadow < 0 is full poison;
+        // 1..7 is a partial tail). Test the first and (for size > 1) last byte;
+        // only on a hit do we call the slow-path __redzone_check to classify and
+        // report. The common in-bounds case is a couple of loads and a branch.
+        Value *Base = B.CreateLoad(PtrTy, ShadowBaseGV, "rz.base");
+        Value *Addr = B.CreatePtrToInt(Ptr, I64);
+        auto poisoned = [&](Value *A) -> Value * {
+          Value *Idx = B.CreateLShr(A, ConstantInt::get(I64, 3)); // 8 bytes/shadow byte
+          Value *Sb = B.CreateLoad(Int8Ty, B.CreateGEP(Int8Ty, Base, Idx));
+          Value *Off = B.CreateTrunc(B.CreateAnd(A, ConstantInt::get(I64, 7)), Int8Ty);
+          return B.CreateAnd(B.CreateICmpNE(Sb, ConstantInt::get(Int8Ty, 0)),
+                             B.CreateICmpSGE(Off, Sb));
+        };
+        Value *Bad = poisoned(Addr);
+        if (Size > 1)
+          Bad = B.CreateOr(Bad, poisoned(B.CreateAdd(Addr,
+                                                     ConstantInt::get(I64, Size - 1))));
+
+        Instruction *Then =
+            SplitBlockAndInsertIfThen(Bad, I->getIterator(), /*Unreachable=*/false);
+        IRBuilder<> SB(Then);
+        SB.CreateCall(Check, {Ptr, ConstantInt::get(I64, Size),
+                              ConstantInt::get(I32, IsWrite ? 1 : 0), FileC, LineC});
         ++checks;
       }
 

@@ -72,60 +72,61 @@ Measured on this machine:
 - **Hardware:** Apple M5 (Mac17,2)
 - **OS:** macOS 26.3.1
 - **Compiler:** Homebrew clang 22.1.4 (LLVM 22)
-- **Command:** `./scripts/bench.sh` (min of 5 runs, `-O2` both)
+- **Command:** `./scripts/bench.sh` (min of K runs, `-O2` both)
+
+Current (v0.11 — inlined fast-path check over a direct-mapped shadow):
 
 | benchmark    | baseline (ms) | instrumented (ms) | slowdown | correct |
 |--------------|--------------:|------------------:|---------:|:-------:|
-| compute      |         142.1 |            1970.0 |    13.9x |   OK    |
-| gather       |          22.3 |            3188.8 |   143.0x |   OK    |
-| alloc_churn  |           2.5 |            2290.9 |   916.4x |   OK    |
+| compute      |         144.5 |             258.2 |     1.8x |   OK    |
+| gather       |          23.3 |             803.0 |    34.5x |   OK    |
+| alloc_churn  |           2.8 |            2253.9 |   805.0x |   OK    |
 
-These are best-case wall times; run-to-run the ratios wobble (a few percent for
-`compute`/`gather`, more for `alloc_churn`). The `alloc_churn` baseline is only a
-few milliseconds — warm, glibc/libmalloc churns tiny blocks almost for free — so
-its slowdown ratio is the least precise of the three (expect it in the high
-hundreds to ~1000x); the absolute instrumented cost (~2.3 s for 100k
-alloc/free pairs) is the stable signal there.
+These are best-case wall times; ratios wobble run-to-run (most for `alloc_churn`,
+whose baseline is only a few ms — a warm allocator churns tiny blocks almost for
+free — so its absolute instrumented cost is the stabler signal).
 
-### Progress: v0.10 direct-mapped shadow
+### How we got here
 
-The shadow is now **direct-mapped** (`g_shadow + (addr>>3)` over one large
-`mmap`) instead of a hashed chunk table, removing the per-access hash probe:
+| benchmark | hashed (v0.9) | direct-mapped (v0.10) | inlined (v0.11) |
+|---|--:|--:|--:|
+| compute | 13.9x | ~11x | **1.8x** |
+| gather | 143x | ~123x | **34.5x** |
+| alloc_churn | ~916x | ~780x | **805x** |
 
-| benchmark | hashed (v0.9) | direct-mapped (v0.10) |
-|---|--:|--:|
-| compute | 13.9x | ~11x |
-| gather | 143x | ~123x |
-| alloc_churn | ~916x | ~780x |
-
-A modest ~15–20% win on its own — confirming that the **function call**, not the
-lookup, now dominates. The big reduction is expected from the next step:
-inlining the check so a common in-bounds access costs no call at all.
+- **v0.10** replaced the hashed shadow with a direct-mapped one
+  (`base + (addr>>3)`): a modest win, confirming the per-access *function call*,
+  not the lookup, dominated.
+- **v0.11** inlined the fast-path check (load the shadow byte, compare, branch;
+  call the slow path only on a flagged byte). Compute-bound code dropped to ~1.8x
+  — essentially ASan territory — and load-bound `gather` improved ~4x.
+  `alloc_churn` barely moved: its cost is the allocator path
+  (`__redzone_malloc`/`free` + poisoning), not per-access checks — the next thing
+  to optimize.
 
 ## Interpretation
 
 The spread across benchmarks is the headline: overhead tracks **memory-access
 and allocation density**, not raw CPU work.
 
-- **`compute` (~14x)** is compute-bound: the inner loop is register-only hashing
-  with a single instrumented array access per outer iteration. There is almost
-  nothing to check, so overhead is comparatively small.
-- **`gather` (~140x)** is load-bound: a `__redzone_check` precedes essentially
-  every load in the hot loop.
-- **`alloc_churn` (hundreds-to-~1000x)** hammers the allocator: each
+- **`compute` (~1.8x)** is compute-bound: register-only hashing with one
+  instrumented access per outer iteration. With the check inlined there is almost
+  nothing to pay, so it sits in AddressSanitizer's ~2-3x range.
+- **`gather` (~35x)** is the worst case: a tight dependent-gather loop where an
+  inlined shadow load precedes essentially every (latency-bound) data load, so
+  the extra loads serialize. Real code is rarely this pointer-chasing-heavy.
+- **`alloc_churn` (hundreds-to-~800x)** hammers the allocator: each
   `malloc`/`free` goes through the runtime's red-zone setup/teardown and shadow
-  bookkeeping, which dwarfs the few-nanosecond warm allocator fast path it
-  replaces.
+  poisoning, which dwarfs the few-nanosecond warm allocator fast path. The
+  inlined access check doesn't touch this path — which is why it's the next
+  optimization target.
 
-The reason for the high end is that each checked access is an **out-of-line
-function call** to `__redzone_check`. (The shadow lookup itself is now a cheap
-direct-mapped `shift+add+load` as of v0.10; the dominant remaining cost is the
-call.) A function call per memory access is inherently expensive, so memory-bound
-code pays dearly while compute-bound code barely notices.
+The remaining per-access cost is now just the inlined shadow load + compare; the
+out-of-line call to `__redzone_check` is taken only when a byte is flagged (and
+re-validated there before reporting).
 
-**These numbers are the baseline to improve against, not a final target.**
-Horizon 4 on the [roadmap](../ROADMAP.md) has two steps: a **direct-mapped
-shadow** (done in v0.10) and **inlining the fast-path check** so the common
-in-bounds access costs no call — the approach AddressSanitizer uses to reach
-roughly **2-3x**. Inlining is expected to pull the memory-bound cases
-(`gather`, `alloc_churn`) down by one to two orders of magnitude.
+Both Horizon 4 shadow/check steps are now in place (direct-mapped shadow in
+v0.10, inlined check in v0.11), bringing compute-bound code to ~2x — ASan
+territory. The remaining high-overhead cases point at the next work: speeding up
+the **allocator path** (`alloc_churn`) and, optionally, **skipping
+provably-safe accesses** to thin out checks in load-heavy loops (`gather`).
