@@ -78,13 +78,44 @@ full long-range plan (Horizons 1–5, scaling strategy, and success metrics).
 
 ## Requirements
 
-- LLVM / Clang (for building the pass and compiling instrumented programs)
+- LLVM / Clang **with development headers** (Homebrew `llvm` works well)
 - CMake (to build the pass plugin)
 - A C++17 toolchain and a C compiler
 
+> Developed and tested against LLVM 22. Note that in LLVM 22 the plugin header
+> lives at `llvm/Plugins/PassPlugin.h` (it was `llvm/Passes/` in older releases).
+
+## Building from source
+
+```bash
+cmake -S . -B build -DCMAKE_PREFIX_PATH=$(brew --prefix llvm)
+cmake --build build
+```
+
+This produces the pass plugin at `build/libRedzonePass.so`.
+
+### Try Phase 0
+
+The current pass (`v0.1`) doesn't instrument anything yet — it prints every
+load/store it observes, proving the pass plugs into the LLVM pipeline:
+
+```bash
+./scripts/demo.sh
+```
+
+or manually:
+
+```bash
+clang -g -O0 -S -emit-llvm examples/sample.c -o build/sample.ll
+opt -load-pass-plugin=build/libRedzonePass.so -passes=redzone \
+    -disable-output build/sample.ll
+```
+
 ## Status
 
-🚧 Early development. The specification and roadmap are in place; implementation starts at Phase 0.
+🚧 Early development. **Phase 0 complete** (`v0.1`): the LLVM pass builds and
+reports every load/store with its source location. Next up: the runtime and
+heap-buffer-overflow detection (`v0.2`).
 
 ## License
 
