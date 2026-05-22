@@ -40,16 +40,28 @@ Keeping the scope tight is deliberate: nail heap bugs first, expand later.
                          report + abort
 ```
 
-1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write, location_id)`.
+1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write)`. It also redirects user `malloc`/`free` calls to the runtime's versions.
 2. **Runtime library** (C):
-   - `__redzone_malloc` allocates the requested bytes plus surrounding **red zones**, and records `{base, size, freed?, alloc_site}` in a metadata table.
+   - `__redzone_malloc` allocates the requested bytes plus surrounding **red zones**, and records `{base, size, freed?}` in a metadata table.
    - `__redzone_free` quarantines the block instead of releasing it immediately, so later access is detectable as **use-after-free**.
    - `__redzone_check` verifies the access falls inside a live region; on a violation it prints a report and aborts.
 
 ## Usage
 
+The fastest way to see it work is the bundled demo (builds the pass and runs it
+on a valid program, a heap overflow, and a use-after-free):
+
 ```bash
-clang -fpass-plugin=./redzone.so -g program.c redzone_runtime.c -o program
+./scripts/demo.sh
+```
+
+To run redzone on your own program, instrument the IR with `opt`, then link with
+the runtime (which must be compiled **without** the pass):
+
+```bash
+clang -g -O0 -S -emit-llvm program.c -o program.ll
+opt -load-pass-plugin=build/libRedzonePass.so -passes=redzone -S program.ll -o program.instr.ll
+clang -g program.instr.ll runtime/redzone_rt.c -o program
 ./program
 ```
 
@@ -57,9 +69,9 @@ Example report on a heap overflow:
 
 ```
 ==redzone ERROR: heap-buffer-overflow
-  WRITE of size 4 at address 0x55a3...
-  at program.c:12
-  0x55a3... is 4 bytes after a 40-byte region allocated at program.c:8
+  WRITE of size 4 at 0x104851d30
+  region: 16-byte allocation [0x104851d20, 0x104851d30)
+  0 byte(s) after the region
 ```
 
 ## Roadmap
@@ -92,30 +104,16 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH=$(brew --prefix llvm)
 cmake --build build
 ```
 
-This produces the pass plugin at `build/libRedzonePass.so`.
-
-### Try Phase 0
-
-The current pass (`v0.1`) doesn't instrument anything yet — it prints every
-load/store it observes, proving the pass plugs into the LLVM pipeline:
-
-```bash
-./scripts/demo.sh
-```
-
-or manually:
-
-```bash
-clang -g -O0 -S -emit-llvm examples/sample.c -o build/sample.ll
-opt -load-pass-plugin=build/libRedzonePass.so -passes=redzone \
-    -disable-output build/sample.ll
-```
+This produces the pass plugin at `build/libRedzonePass.so`. See **Usage** above
+to run it, or just `./scripts/demo.sh`.
 
 ## Status
 
-🚧 Early development. **Phase 0 complete** (`v0.1`): the LLVM pass builds and
-reports every load/store with its source location. Next up: the runtime and
-heap-buffer-overflow detection (`v0.2`).
+🚧 Early development. **Phases 0–1 complete** (`v0.2`): the pass instruments
+every load/store and redirects `malloc`/`free`, and the runtime detects
+**heap-buffer-overflow** and **use-after-free** on the bundled examples. Next up
+(`v0.3`): `file:line` in reports via debug info, then shadow memory for scale
+(Horizon 2).
 
 ## License
 

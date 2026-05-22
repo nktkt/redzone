@@ -30,12 +30,13 @@ These guide every decision. A feature that breaks a pillar waits.
 
 Prove the core idea end to end on small programs.
 
-- `v0.1` — **Pass skeleton.** Instrument every `load`/`store`; print them. Proves
+- `v0.1` ✅ — **Pass skeleton.** Walk every `load`/`store`; print them. Proves
   the LLVM pass plugs into the compiler.
-- `v0.2` — **Heap-buffer-overflow detection.** `malloc` wrapper + red zones +
-  metadata table; `__redzone_check` validates accesses.
-- `v0.3` — **Use-after-free** via free quarantine, plus `file:line` in reports
-  using debug info.
+- `v0.2` ✅ — **Heap-buffer-overflow and use-after-free detection.** `malloc`
+  wrapper + red zones + metadata table; `__redzone_check` validates accesses;
+  `__redzone_free` quarantines freed blocks.
+- `v0.3` — **Readable reports:** `file:line` of the faulting access and the
+  allocation site, via debug info.
 
 **Exit criteria:** a golden corpus of known-bad programs is caught, known-good
 programs run clean, all from a single `clang` invocation.
@@ -137,6 +138,9 @@ Run alongside every horizon, not in sequence.
 
 ## Now / Next / Later
 
-- **Now:** Horizon 1, `v0.1` — the pass skeleton (Phase 0).
-- **Next:** heap overflow + use-after-free with readable reports (`v0.2`–`v0.3`).
-- **Later:** shadow memory and the jump to real-world scale (Horizon 2+).
+- **Done:** `v0.1` pass skeleton (Phase 0); `v0.2` heap-buffer-overflow +
+  use-after-free detection (Phase 1).
+- **Now:** Horizon 1, `v0.3` — `file:line` in reports via debug info.
+- **Next:** Horizon 2 — shadow memory (the scalability unlock), then stack/global
+  coverage and leak detection.
+- **Later:** developer experience, CI integration, and real-world scale.
