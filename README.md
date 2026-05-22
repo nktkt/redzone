@@ -42,9 +42,9 @@ Keeping the scope tight is deliberate: nail heap bugs first, expand later.
 
 1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write, file, line)`. It also redirects user `malloc`/`free` calls to the runtime's versions, forwarding the allocation-site `file:line`.
 2. **Runtime library** (C):
-   - `__redzone_malloc` allocates the requested bytes plus surrounding **red zones**, and records `{base, size, freed?, alloc site}` in a metadata table.
-   - `__redzone_free` quarantines the block instead of releasing it immediately, so later access is detectable as **use-after-free**.
-   - `__redzone_check` verifies the access falls inside a live region; on a violation it prints a report and aborts.
+   - `__redzone_malloc` allocates the requested bytes plus surrounding **red zones**, marks the user region addressable and the red zones poisoned in **shadow memory**, and records `{base, size, freed?, alloc site}` in a metadata table.
+   - `__redzone_free` quarantines the block and poisons its shadow as freed, so later access is detectable as **use-after-free**.
+   - `__redzone_check` reads the shadow for the access in **O(1)** (no scanning); on a poisoned byte it consults the table to produce a rich report and aborts.
 
 ## Usage
 
@@ -118,10 +118,12 @@ and write), double-free, and invalid-free, plus several valid programs.
 
 ## Status
 
-🚧 Early development. **Through `v0.3`:** the pass instruments every load/store
+🚧 Early development. **Through `v0.4`:** the pass instruments every load/store
 and redirects `malloc`/`free`; the runtime detects **heap-buffer-overflow**,
-**use-after-free**, and **double-free**, and reports the faulting `file:line`
-plus the allocation site. Next up: shadow memory for scale (Horizon 2).
+**use-after-free**, **double-free** and **invalid-free**, and reports the
+faulting `file:line` plus the allocation site. The per-access check now uses
+**shadow memory** (O(1)). A 10-case suite (`./scripts/test.sh`) passes. Next up:
+broader coverage (stack/global, leaks) and developer-experience work.
 
 ## License
 

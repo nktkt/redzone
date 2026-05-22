@@ -1,22 +1,28 @@
 //===- redzone_rt.c - redzone runtime library -----------------------------===//
 //
-// Phase 1 (v0.2): heap-buffer-overflow and use-after-free detection.
-// v0.3: reports now carry the faulting source location and the allocation site.
+// Detects heap-buffer-overflow, use-after-free, double-free and invalid-free.
 //
-// Strategy (the simple, table-based approach from ROADMAP Horizon 1; shadow
-// memory comes later in Horizon 2):
+// v0.2  table-based detection; v0.3  source locations in reports;
+// v0.4 (Horizon 2)  shadow memory: the per-access check is now O(1).
 //
-//   * Every allocation is padded with a RED ZONE on each side. The real block
-//     is [real_base, real_base + total); the user sees [user, user + size).
-//   * We record each block in a table, along with where it was allocated.
-//   * __redzone_check(addr, size) finds the block whose *full* range contains
-//     addr. If addr falls in a red zone (outside the user range) -> overflow.
-//     If the block was freed -> use-after-free. Unknown addresses are allowed
-//     (they are stack/global accesses we do not track).
+// Two structures cooperate:
 //
-// Limitations (intentional for the MVP): single-threaded (no locking), freed
-// blocks are quarantined and never actually released, and lookup is a linear
-// scan. All of these are addressed in later horizons.
+//   1. SHADOW MEMORY (the fast path). Each aligned 8-byte chunk of application
+//      memory maps to one shadow byte recording how much of it is addressable
+//      (see encoding below). __redzone_check reads the shadow for the first and
+//      last byte of an access -- O(1), no scanning. Shadow is stored in a
+//      lazily-allocated hash of fixed-size chunks (a portable stand-in for the
+//      fixed-offset mmap that production ASan uses; see docs/design).
+//
+//   2. ALLOCATION TABLE (the slow path). Records each block's size, bounds and
+//      allocation site. Consulted only by __redzone_free and, on a violation,
+//      to produce a rich report -- so the common path never walks it.
+//
+// IMPORTANT: compile this runtime WITHOUT the redzone pass, or its own
+// malloc/free below would be rewritten and recurse forever.
+//
+// Limitations (intentional MVP): single-threaded, freed blocks are quarantined
+// and never released. Addressed in later horizons.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,6 +33,17 @@
 #include <stdlib.h>
 
 #define REDZONE_SIZE 16 // guard bytes on each side of an allocation
+
+// Shadow byte encoding (signed):
+//   0        all 8 bytes of the chunk are addressable
+//   1..7     only the first k bytes are addressable (partial tail)
+//   negative poisoned -- the whole chunk is off-limits
+#define RZ_POISON ((int8_t)0xFA)    // red zone
+#define FREED_POISON ((int8_t)0xFD) // freed memory
+
+//===----------------------------------------------------------------------===//
+// Allocation table (slow path: free + reporting)
+//===----------------------------------------------------------------------===//
 
 typedef struct {
   uintptr_t real_base;    // start of the whole allocation, incl. red zones
@@ -42,7 +59,6 @@ static Block *g_blocks = NULL;
 static size_t g_count = 0;
 static size_t g_cap = 0;
 
-// Return the block whose full range (red zones included) contains `addr`.
 static Block *find_block(uintptr_t addr) {
   for (size_t i = 0; i < g_count; i++) {
     Block *b = &g_blocks[i];
@@ -75,6 +91,123 @@ static void record_block(uintptr_t real_base, size_t total_size,
   b->alloc_line = line;
 }
 
+//===----------------------------------------------------------------------===//
+// Shadow memory (fast path)
+//===----------------------------------------------------------------------===//
+
+#define CHUNK_SHIFT 16                          // each chunk covers 64 KiB
+#define CHUNK_APP ((uintptr_t)1 << CHUNK_SHIFT) // app bytes per chunk
+#define CHUNK_SHADOW (CHUNK_APP >> 3)           // shadow bytes per chunk (8 KiB)
+
+typedef struct {
+  uintptr_t key;   // app_addr >> CHUNK_SHIFT
+  int8_t *shadow;  // CHUNK_SHADOW bytes, or NULL if the slot is empty
+} ChunkEntry;
+
+static ChunkEntry *g_dir = NULL; // open-addressing hash table of chunks
+static size_t g_dir_cap = 0;
+static size_t g_dir_count = 0;
+
+static size_t hash_key(uintptr_t key) {
+  return (size_t)(key * 0x9E3779B97F4A7C15ull); // Fibonacci hashing
+}
+
+static void dir_insert(ChunkEntry *dir, size_t cap, uintptr_t key,
+                       int8_t *shadow) {
+  size_t mask = cap - 1;
+  size_t i = hash_key(key) & mask;
+  while (dir[i].shadow)
+    i = (i + 1) & mask;
+  dir[i].key = key;
+  dir[i].shadow = shadow;
+}
+
+static void dir_grow(void) {
+  size_t new_cap = g_dir_cap ? g_dir_cap * 2 : 1024;
+  ChunkEntry *n = (ChunkEntry *)calloc(new_cap, sizeof(ChunkEntry));
+  if (!n) {
+    fprintf(stderr, "redzone: out of memory growing shadow directory\n");
+    abort();
+  }
+  for (size_t i = 0; i < g_dir_cap; i++)
+    if (g_dir[i].shadow)
+      dir_insert(n, new_cap, g_dir[i].key, g_dir[i].shadow);
+  free(g_dir);
+  g_dir = n;
+  g_dir_cap = new_cap;
+}
+
+// Return the shadow chunk for `key`, allocating it (and the directory) if
+// `create` is set. A fresh chunk is all-zero, i.e. fully addressable.
+static int8_t *get_chunk(uintptr_t key, int create) {
+  if (!g_dir) {
+    if (!create)
+      return NULL;
+    dir_grow();
+  }
+  if (create && (g_dir_count + 1) * 4 >= g_dir_cap * 3) // keep load factor < 3/4
+    dir_grow();
+
+  size_t mask = g_dir_cap - 1;
+  size_t i = hash_key(key) & mask;
+  while (g_dir[i].shadow) {
+    if (g_dir[i].key == key)
+      return g_dir[i].shadow;
+    i = (i + 1) & mask;
+  }
+  if (!create)
+    return NULL;
+
+  int8_t *chunk = (int8_t *)calloc(CHUNK_SHADOW, 1); // 0 == addressable
+  if (!chunk) {
+    fprintf(stderr, "redzone: out of memory allocating shadow chunk\n");
+    abort();
+  }
+  g_dir[i].key = key;
+  g_dir[i].shadow = chunk;
+  g_dir_count++;
+  return chunk;
+}
+
+static int8_t *shadow_ptr(uintptr_t app, int create) {
+  int8_t *chunk = get_chunk(app >> CHUNK_SHIFT, create);
+  if (!chunk)
+    return NULL;
+  return &chunk[(app & (CHUNK_APP - 1)) >> 3];
+}
+
+static int8_t shadow_load(uintptr_t app) {
+  int8_t *p = shadow_ptr(app, 0);
+  return p ? *p : 0; // no chunk == addressable
+}
+
+static void set_shadow_byte(uintptr_t app, int8_t val) {
+  int8_t *p = shadow_ptr(app, 1);
+  *p = val;
+}
+
+// Set the shadow for every aligned 8-byte chunk overlapping [start, start+len).
+static void set_shadow_range(uintptr_t start, size_t len, int8_t val) {
+  uintptr_t a = start & ~(uintptr_t)7;            // round down
+  uintptr_t end = (start + len + 7) & ~(uintptr_t)7; // round up
+  for (; a < end; a += 8)
+    set_shadow_byte(a, val);
+}
+
+// Is the byte at `app` off-limits?
+static int byte_poisoned(uintptr_t app) {
+  int8_t sv = shadow_load(app);
+  if (sv == 0)
+    return 0; // whole chunk addressable
+  if (sv < 0)
+    return 1; // poisoned
+  return (int)(app & 7) >= sv; // partial: only first `sv` bytes are valid
+}
+
+//===----------------------------------------------------------------------===//
+// Allocation / deallocation
+//===----------------------------------------------------------------------===//
+
 void *__redzone_malloc(size_t size, const char *file, int line) {
   size_t total = size + 2 * REDZONE_SIZE;
   unsigned char *base = (unsigned char *)malloc(total);
@@ -82,6 +215,16 @@ void *__redzone_malloc(size_t size, const char *file, int line) {
     return NULL;
   uintptr_t user = (uintptr_t)base + REDZONE_SIZE;
   record_block((uintptr_t)base, total, user, size, file, line);
+
+  // Poison the whole block, then carve out the addressable user region.
+  set_shadow_range((uintptr_t)base, total, RZ_POISON);
+  size_t aligned = size & ~(size_t)7;
+  size_t rem = size & 7;
+  if (aligned)
+    set_shadow_range(user, aligned, 0);
+  if (rem)
+    set_shadow_byte(user + aligned, (int8_t)rem);
+
   return (void *)user;
 }
 
@@ -101,7 +244,13 @@ void __redzone_free(void *ptr) {
     abort();
   }
   b->freed = 1; // quarantine: keep metadata so use-after-free stays detectable
+  // Poison the whole user region as freed.
+  set_shadow_range(b->user_addr, (b->user_size + 7) & ~(size_t)7, FREED_POISON);
 }
+
+//===----------------------------------------------------------------------===//
+// The check
+//===----------------------------------------------------------------------===//
 
 static void report(const char *kind, const void *addr, size_t size, int is_write,
                    const char *file, int line, Block *b) {
@@ -135,15 +284,20 @@ static void report(const char *kind, const void *addr, size_t size, int is_write
 
 void __redzone_check(const void *addr, size_t size, int is_write,
                      const char *file, int line) {
+  if (size == 0)
+    return;
   uintptr_t a = (uintptr_t)addr;
+
+  // Fast path: a poisoned first or last byte means the access is illegal.
+  if (!byte_poisoned(a) && !byte_poisoned(a + size - 1))
+    return;
+
+  // Slow path: only reached on a violation. Classify it with the table.
   Block *b = find_block(a);
   if (!b)
-    return; // untracked (stack/global) — nothing we can say
-  if (b->freed) {
+    return; // poisoned but untracked -- be conservative and allow
+  if (b->freed)
     report("use-after-free", addr, size, is_write, file, line, b);
-    return;
-  }
-  if (a >= b->user_addr && a + size <= b->user_addr + b->user_size)
-    return; // fully inside the user region: OK
-  report("heap-buffer-overflow", addr, size, is_write, file, line, b);
+  else
+    report("heap-buffer-overflow", addr, size, is_write, file, line, b);
 }

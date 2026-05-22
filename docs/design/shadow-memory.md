@@ -1,6 +1,9 @@
 # Design note: shadow memory (Horizon 2)
 
-Status: **proposed** — not yet implemented.
+Status: **implemented (MVP)** in `runtime/redzone_rt.c` as of v0.4. The
+per-access fast path is now O(1); the allocation table is consulted only on the
+error path. Remaining stretch items (inlining the fast path, fixed-offset
+shadow) are deferred to Horizon 4.
 
 ## Problem
 
@@ -84,13 +87,21 @@ the `O(n)` table walk happens at most once per run (when reporting the bug).
 
 ## Migration plan
 
-1. Add the shadow map + poison/unpoison helpers; keep the table.
-2. Rewrite `__redzone_check` fast path to read the shadow; on poison, fall back
-   to the table for the rich report.
-3. Move `__redzone_malloc`/`__redzone_free` to poison/unpoison shadow.
-4. Benchmark against the table version; confirm correctness on the full test
-   corpus.
-5. (Later) inline the fast path in the pass; (later) fixed-offset shadow.
+1. ✅ Add the shadow map + poison/unpoison helpers; keep the table.
+2. ✅ Rewrite `__redzone_check` fast path to read the shadow; on poison, fall
+   back to the table for the rich report.
+3. ✅ Move `__redzone_malloc`/`__redzone_free` to poison/unpoison shadow.
+4. ✅ Confirm correctness on the full test corpus (10/10 pass unchanged).
+5. (Later, Horizon 4) inline the fast path in the pass; fixed-offset shadow;
+   add benchmarks.
+
+## What shipped
+
+The MVP uses a **lazily-allocated hash of fixed-size shadow chunks** (each
+covering 64 KiB of app memory, 8 KiB of shadow) rather than a two-level radix
+table — same lazy, portable, O(1) properties, simpler code. Encoding is signed:
+`0` fully addressable, `1..7` partial tail, negative poisoned (`0xFA` red zone,
+`0xFD` freed). `__redzone_check` tests the first and last byte of each access.
 
 ## Open questions
 

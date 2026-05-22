@@ -45,8 +45,9 @@ programs run clean, all from a single `clang` invocation.
 
 Make it correct and fast enough to point at real code.
 
-- **Shadow memory model** — replace the O(n) metadata table with O(1) shadow
-  lookups. *This is the central scalability unlock.*
+- ✅ **Shadow memory model** — replace the O(n) metadata table with O(1) shadow
+  lookups. *This is the central scalability unlock.* (Done in v0.4: lazy hashed
+  shadow chunks; table kept for error-path reports only.)
 - **Full allocator coverage** — `calloc`, `realloc`, `aligned_alloc`,
   `free`, and C++ `new`/`delete`.
 - **Stack buffer overflow** detection (red zones around stack allocations).
@@ -138,9 +139,8 @@ Run alongside every horizon, not in sequence.
 
 ## Now / Next / Later
 
-- **Done:** `v0.1` pass skeleton; `v0.2` heap-overflow + use-after-free
-  detection; `v0.3` readable reports (faulting line + allocation site).
-- **Now:** Horizon 1 wrap-up — broaden the test corpus and edge cases.
-- **Next:** Horizon 2 — shadow memory (the scalability unlock), then stack/global
-  coverage and leak detection.
-- **Later:** developer experience, CI integration, and real-world scale.
+- **Done:** `v0.1`–`v0.3` (overflow + use-after-free detection, readable
+  reports, 10-case test suite); `v0.4` shadow memory (O(1) per-access check).
+- **Now:** broaden detection — stack/global buffer overflows, then memory leaks.
+- **Next:** developer experience — a CLI wrapper, SARIF/JSON output, CI recipes.
+- **Later:** real-world scale (selective/incremental instrumentation), platform.
