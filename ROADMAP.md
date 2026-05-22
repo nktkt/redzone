@@ -48,8 +48,8 @@ Make it correct and fast enough to point at real code.
 - ✅ **Shadow memory model** — replace the O(n) metadata table with O(1) shadow
   lookups. *This is the central scalability unlock.* (Done in v0.4: lazy hashed
   shadow chunks; table kept for error-path reports only.)
-- **Full allocator coverage** — `calloc`, `realloc`, `aligned_alloc`,
-  `free`, and C++ `new`/`delete`.
+- ✅ **Allocator coverage** — `malloc`/`calloc`/`realloc`/`free` (v0.7).
+  `aligned_alloc` and C++ `new`/`delete` remain.
 - ✅ **Stack buffer overflow** detection (v0.6): the pass wraps each static
   stack allocation with red zones, poisoned on entry and restored on return.
 - **Global buffer overflow** detection.
@@ -145,7 +145,8 @@ Run alongside every horizon, not in sequence.
 - **Done:** `v0.1`–`v0.3` (heap-overflow + use-after-free, readable reports,
   test suite); `v0.4` shadow memory (O(1) check); `v0.5` leak detection; `v0.6`
   stack-buffer-overflow. Suite is 12/12.
-- **Now:** finish Horizon 2 — global buffer overflows; fuller allocator coverage
-  (`calloc`/`realloc`).
-- **Next:** developer experience — a CLI wrapper, SARIF/JSON output, CI recipes.
+- **Now:** Horizon 3 (developer experience) — a CLI wrapper, SARIF/JSON output,
+  CI recipes — to make redzone adoptable.
+- **Deferred Horizon 2 items:** global buffer overflows; `aligned_alloc`/`new`/
+  `delete`; performance benchmarks.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.

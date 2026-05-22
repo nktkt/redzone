@@ -20,6 +20,8 @@ extern "C" {
 // with red zones. The pass redirects user malloc/free calls to these; `file`
 // and `line` record the allocation site for diagnostics (may be NULL/0).
 void *__redzone_malloc(size_t size, const char *file, int line);
+void *__redzone_calloc(size_t nmemb, size_t size, const char *file, int line);
+void *__redzone_realloc(void *ptr, size_t size, const char *file, int line);
 void __redzone_free(void *ptr);
 
 // Validate a memory access of `size` bytes at `addr`. `is_write` is 1 for

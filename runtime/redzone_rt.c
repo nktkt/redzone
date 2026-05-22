@@ -31,6 +31,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define REDZONE_SIZE 16 // guard bytes on each side of an allocation
 
@@ -227,6 +228,35 @@ void *__redzone_malloc(size_t size, const char *file, int line) {
     set_shadow_byte(user + aligned, (int8_t)rem);
 
   return (void *)user;
+}
+
+void *__redzone_calloc(size_t nmemb, size_t size, const char *file, int line) {
+  if (size != 0 && nmemb > SIZE_MAX / size)
+    return NULL; // the multiplication would overflow
+  size_t total = nmemb * size;
+  void *p = __redzone_malloc(total, file, line);
+  if (p)
+    memset(p, 0, total); // calloc zero-initializes
+  return p;
+}
+
+void *__redzone_realloc(void *ptr, size_t size, const char *file, int line) {
+  if (ptr == NULL)
+    return __redzone_malloc(size, file, line);
+  if (size == 0) {
+    __redzone_free(ptr);
+    return NULL;
+  }
+  void *np = __redzone_malloc(size, file, line);
+  if (!np)
+    return NULL;
+  Block *old = find_block((uintptr_t)ptr);
+  if (old && !old->freed) {
+    size_t copy = old->user_size < size ? old->user_size : size;
+    memcpy(np, ptr, copy);
+  }
+  __redzone_free(ptr); // quarantine the old block
+  return np;
 }
 
 void __redzone_free(void *ptr) {

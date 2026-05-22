@@ -41,7 +41,7 @@ Keeping the scope tight is deliberate: nail heap bugs first, expand later.
                          report + abort
 ```
 
-1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write, file, line)`. It also redirects user `malloc`/`free` calls to the runtime's versions (forwarding the allocation-site `file:line`), and wraps each static stack allocation with red zones — poisoned at function entry, restored before each return — so stack overflows are caught too.
+1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write, file, line)`. It also redirects user `malloc`/`calloc`/`realloc`/`free` calls to the runtime's versions (forwarding the allocation-site `file:line`), and wraps each static stack allocation with red zones — poisoned at function entry, restored before each return — so stack overflows are caught too.
 2. **Runtime library** (C):
    - `__redzone_malloc` allocates the requested bytes plus surrounding **red zones**, marks the user region addressable and the red zones poisoned in **shadow memory**, and records `{base, size, freed?, alloc site}` in a metadata table.
    - `__redzone_free` quarantines the block and poisons its shadow as freed, so later access is detectable as **use-after-free**.
@@ -119,12 +119,13 @@ and write), double-free, and invalid-free, plus several valid programs.
 
 ## Status
 
-🚧 Early development. **Through `v0.6`:** redzone detects **heap-** and
+🚧 Early development. **Through `v0.7`:** redzone detects **heap-** and
 **stack-buffer-overflow**, **use-after-free**, **double-free**, **invalid-free**
-and **memory leaks**, reporting the faulting `file:line` (plus the allocation
-site for heap bugs). The per-access check uses **shadow memory** (O(1)). A
-12-case suite (`./scripts/test.sh`) passes. Next up: global buffer-overflow
-coverage, then developer-experience work (CLI, SARIF/JSON, CI).
+and **memory leaks** across `malloc`/`calloc`/`realloc`/`free`, reporting the
+faulting `file:line` (plus the allocation site for heap bugs). The per-access
+check uses **shadow memory** (O(1)). A 14-case suite (`./scripts/test.sh`)
+passes. Next up: developer-experience work — a CLI wrapper, SARIF/JSON output,
+and CI recipes (Horizon 3).
 
 ## License
 

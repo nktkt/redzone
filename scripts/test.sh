@@ -31,6 +31,8 @@ CASES=(
   "invalid_free.c:invalid-free"
   "memory_leak.c:memory-leak"
   "stack_overflow.c:stack-buffer-overflow"
+  "calloc_overflow.c:heap-buffer-overflow"
+  "realloc_grow.c:OK"
 )
 
 # Build the pass plugin only if it isn't already present.

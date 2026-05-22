@@ -65,6 +65,10 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         M.getOrInsertFunction("__redzone_stack_enter", VoidTy, PtrTy, I64);
     FunctionCallee StackLeave =
         M.getOrInsertFunction("__redzone_stack_leave", VoidTy, PtrTy, I64);
+    FunctionCallee RzCalloc = M.getOrInsertFunction(
+        "__redzone_calloc", PtrTy, I64, I64, PtrTy, I32);
+    FunctionCallee RzRealloc = M.getOrInsertFunction(
+        "__redzone_realloc", PtrTy, PtrTy, I64, PtrTy, I32);
 
     // Deduplicated filename string globals, keyed by filename.
     StringMap<Constant *> StrCache;
@@ -94,7 +98,7 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
 
       // Collect first, mutate after, to avoid invalidating iterators.
       SmallVector<Instruction *, 16> accesses;
-      SmallVector<CallInst *, 8> mallocCalls, freeCalls;
+      SmallVector<CallInst *, 8> mallocCalls, callocCalls, reallocCalls, freeCalls;
       SmallVector<AllocaInst *, 8> allocas;
       SmallVector<ReturnInst *, 4> returns;
 
@@ -104,9 +108,14 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
             accesses.push_back(&I);
           } else if (auto *CI = dyn_cast<CallInst>(&I)) {
             if (Function *Callee = CI->getCalledFunction()) {
-              if (Callee->getName() == "malloc")
+              StringRef N = Callee->getName();
+              if (N == "malloc")
                 mallocCalls.push_back(CI);
-              else if (Callee->getName() == "free")
+              else if (N == "calloc")
+                callocCalls.push_back(CI);
+              else if (N == "realloc")
+                reallocCalls.push_back(CI);
+              else if (N == "free")
                 freeCalls.push_back(CI);
             }
           } else if (auto *AI = dyn_cast<AllocaInst>(&I)) {
@@ -179,6 +188,28 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         CI->eraseFromParent();
         ++mallocs;
       }
+      // calloc(nmemb, size) -> __redzone_calloc(nmemb, size, file, line)
+      for (CallInst *CI : callocCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI = B.CreateCall(
+            RzCalloc, {CI->getArgOperand(0), CI->getArgOperand(1), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+      // realloc(ptr, size) -> __redzone_realloc(ptr, size, file, line)
+      for (CallInst *CI : reallocCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI = B.CreateCall(
+            RzRealloc, {CI->getArgOperand(0), CI->getArgOperand(1), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
       // 4. Redirect free: same signature, just swap the callee.
       for (CallInst *CI : freeCalls) {
         CI->setCalledFunction(RzFree);
@@ -187,7 +218,7 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
     }
 
     errs() << "[redzone] instrumented " << checks << " access(es); " << stackVars
-           << " stack var(s); redirected " << mallocs << " malloc / " << frees
+           << " stack var(s); redirected " << mallocs << " alloc / " << frees
            << " free call(s)\n";
 
     bool Changed = checks || mallocs || frees || stackVars;
