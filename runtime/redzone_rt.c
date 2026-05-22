@@ -301,3 +301,45 @@ void __redzone_check(const void *addr, size_t size, int is_write,
   else
     report("heap-buffer-overflow", addr, size, is_write, file, line, b);
 }
+
+//===----------------------------------------------------------------------===//
+// Leak detection (at exit)
+//===----------------------------------------------------------------------===//
+//
+// On a clean exit, any block still in the table that was never freed is a leak.
+// (Programs that abort via __redzone_check/__redzone_free never get here, since
+// abort() bypasses atexit handlers -- so a detected bug is never also reported
+// as a leak.) This is a simple "never freed by exit" check; reachability-aware
+// leak analysis is a later refinement.
+
+static void report_leaks(void) {
+  size_t leaked = 0, bytes = 0;
+  for (size_t i = 0; i < g_count; i++)
+    if (!g_blocks[i].freed) {
+      leaked++;
+      bytes += g_blocks[i].user_size;
+    }
+  if (leaked == 0)
+    return;
+
+  fprintf(stderr, "==redzone ERROR: memory-leak\n");
+  fprintf(stderr, "  %zu allocation(s) never freed, %zu byte(s) total\n", leaked,
+          bytes);
+  for (size_t i = 0; i < g_count; i++) {
+    Block *b = &g_blocks[i];
+    if (b->freed)
+      continue;
+    if (b->alloc_file)
+      fprintf(stderr, "  %zu byte(s) allocated at %s:%d\n", b->user_size,
+              b->alloc_file, b->alloc_line);
+    else
+      fprintf(stderr, "  %zu byte(s) (unknown allocation site)\n", b->user_size);
+  }
+
+  fflush(NULL); // flush the program's own output before forcing the exit code
+  _Exit(1);     // signal the leak via a nonzero status
+}
+
+__attribute__((constructor)) static void redzone_init(void) {
+  atexit(report_leaks);
+}

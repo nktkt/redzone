@@ -29,6 +29,7 @@ CASES=(
   "use_after_free_write.c:use-after-free"
   "double_free.c:double-free"
   "invalid_free.c:invalid-free"
+  "memory_leak.c:memory-leak"
 )
 
 # Build the pass plugin only if it isn't already present.

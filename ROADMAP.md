@@ -52,7 +52,9 @@ Make it correct and fast enough to point at real code.
   `free`, and C++ `new`/`delete`.
 - **Stack buffer overflow** detection (red zones around stack allocations).
 - **Global buffer overflow** detection.
-- **Memory leak detection** at exit (LeakSanitizer-style).
+- ✅ **Memory leak detection** at exit (v0.5): un-freed blocks are reported with
+  their allocation site; the process exits nonzero. (Reachability-aware analysis
+  is a later refinement.)
 - **Performance budget** — target ≤ 2–3× slowdown; track memory overhead.
 
 **Exit criteria:** runs cleanly and usefully on a mid-size open-source C project.

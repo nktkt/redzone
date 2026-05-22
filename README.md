@@ -11,9 +11,9 @@ The name comes from the *red zones*: poisoned guard regions placed around every 
 | Detected ✅ | Out of scope (for now) ❌ |
 |---|---|
 | Heap buffer overflow (read/write past a `malloc`'d region) | Stack / global buffer overflows |
-| Use-after-free (using memory after it was freed) | Memory leaks |
-| | Data races (multithreading) |
-| | Performance optimization |
+| Use-after-free (read/write after a region is freed) | Data races (multithreading) |
+| Double-free and invalid-free | Performance optimization |
+| Memory leaks (allocations never freed, reported at exit) | |
 
 Keeping the scope tight is deliberate: nail heap bugs first, expand later.
 
@@ -118,12 +118,12 @@ and write), double-free, and invalid-free, plus several valid programs.
 
 ## Status
 
-🚧 Early development. **Through `v0.4`:** the pass instruments every load/store
+🚧 Early development. **Through `v0.5`:** the pass instruments every load/store
 and redirects `malloc`/`free`; the runtime detects **heap-buffer-overflow**,
-**use-after-free**, **double-free** and **invalid-free**, and reports the
-faulting `file:line` plus the allocation site. The per-access check now uses
-**shadow memory** (O(1)). A 10-case suite (`./scripts/test.sh`) passes. Next up:
-broader coverage (stack/global, leaks) and developer-experience work.
+**use-after-free**, **double-free**, **invalid-free** and **memory leaks**, and
+reports the faulting `file:line` plus the allocation site. The per-access check
+uses **shadow memory** (O(1)). An 11-case suite (`./scripts/test.sh`) passes.
+Next up: stack/global buffer-overflow coverage, then developer-experience work.
 
 ## License
 
