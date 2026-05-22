@@ -87,6 +87,21 @@ its slowdown ratio is the least precise of the three (expect it in the high
 hundreds to ~1000x); the absolute instrumented cost (~2.3 s for 100k
 alloc/free pairs) is the stable signal there.
 
+### Progress: v0.10 direct-mapped shadow
+
+The shadow is now **direct-mapped** (`g_shadow + (addr>>3)` over one large
+`mmap`) instead of a hashed chunk table, removing the per-access hash probe:
+
+| benchmark | hashed (v0.9) | direct-mapped (v0.10) |
+|---|--:|--:|
+| compute | 13.9x | ~11x |
+| gather | 143x | ~123x |
+| alloc_churn | ~916x | ~780x |
+
+A modest ~15–20% win on its own — confirming that the **function call**, not the
+lookup, now dominates. The big reduction is expected from the next step:
+inlining the check so a common in-bounds access costs no call at all.
+
 ## Interpretation
 
 The spread across benchmarks is the headline: overhead tracks **memory-access
@@ -102,16 +117,15 @@ and allocation density**, not raw CPU work.
   bookkeeping, which dwarfs the few-nanosecond warm allocator fast path it
   replaces.
 
-The reason for the high end is the current implementation strategy: each checked
-access is an **out-of-line function call** to `__redzone_check`, which performs a
-**hash-table shadow lookup**. A call + hash probe per memory access is inherently
-expensive, so memory-bound code pays dearly while compute-bound code barely
-notices.
+The reason for the high end is that each checked access is an **out-of-line
+function call** to `__redzone_check`. (The shadow lookup itself is now a cheap
+direct-mapped `shift+add+load` as of v0.10; the dominant remaining cost is the
+call.) A function call per memory access is inherently expensive, so memory-bound
+code pays dearly while compute-bound code barely notices.
 
 **These numbers are the baseline to improve against, not a final target.**
-Horizon 4 on the [roadmap](../ROADMAP.md) targets inlining the fast-path check
-(no call on the common in-bounds case) and replacing the hash table with a
-**direct-mapped shadow**, the approach AddressSanitizer uses to reach roughly
-**2-3x**. The expectation is that those two changes pull the memory-bound cases
-(`gather`, `alloc_churn`) down by one to two orders of magnitude; this table is
-the before-picture for that work.
+Horizon 4 on the [roadmap](../ROADMAP.md) has two steps: a **direct-mapped
+shadow** (done in v0.10) and **inlining the fast-path check** so the common
+in-bounds access costs no call — the approach AddressSanitizer uses to reach
+roughly **2-3x**. Inlining is expected to pull the memory-bound cases
+(`gather`, `alloc_churn`) down by one to two orders of magnitude.

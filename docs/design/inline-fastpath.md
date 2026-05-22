@@ -1,7 +1,7 @@
 # Design note: inline fast-path checks + direct-mapped shadow (Horizon 4)
 
-Status: **proposed** — not yet implemented. Depends on the benchmark harness
-(`scripts/bench.sh`) for before/after numbers.
+Status: **in progress.** Phase 1 (direct-mapped shadow) shipped in v0.10; Phase 2
+(inlining the fast-path check) is next. Measured with `scripts/bench.sh`.
 
 ## Problem
 
@@ -75,8 +75,8 @@ ok:
 
 ## Phasing (each step independently benchmarkable)
 
-1. Runtime: hash shadow → **direct-mapped** shadow; keep `__redzone_check` a
-   call. Measure.
+1. ✅ Runtime: hash shadow → **direct-mapped** shadow; keep `__redzone_check` a
+   call (v0.10; ~15–20% win — confirms the call dominates).
 2. Pass: **inline** the fast path; demote `__redzone_check` to the slow-path
    `__redzone_report`. Measure.
 3. (Stretch) Skip provably-safe accesses statically; coalesce checks; this is the

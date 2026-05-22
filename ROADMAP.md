@@ -156,10 +156,9 @@ Run alongside every horizon, not in sequence.
   stack-buffer-overflow. Suite is 12/12.
 - **Horizon 3 done:** CLI wrapper; CI (suite + format + integration checks);
   machine-readable output with a SARIF→code-scanning guide; CMake & Make recipes.
-- **Now (Horizon 4):** baseline overhead is captured (memory-bound ~140x; see
-  `docs/benchmarks.md`). Next: a **direct-mapped shadow** then **inlining the
-  fast-path check** (`docs/design/inline-fastpath.md`) to drive overhead toward
-  ~2-3x.
+- **Now (Horizon 4):** **direct-mapped shadow** done (v0.10; modest win — the
+  out-of-line call dominates). Next: **inline the fast-path check**
+  (`docs/design/inline-fastpath.md`) for the big reduction toward ~2-3x.
 - **Also deferred:** external (non-static) globals, `aligned_alloc` / C++
   `new`/`delete`, Bazel.
 - **Deferred Horizon 2:** global buffer overflows; `aligned_alloc`/`new`/`delete`;

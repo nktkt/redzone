@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 
 #define REDZONE_SIZE 16 // guard bytes on each side of an allocation
 
@@ -98,95 +99,48 @@ static void record_block(uintptr_t real_base, size_t total_size,
 // Shadow memory (fast path)
 //===----------------------------------------------------------------------===//
 
-#define CHUNK_SHIFT 16                          // each chunk covers 64 KiB
-#define CHUNK_APP ((uintptr_t)1 << CHUNK_SHIFT) // app bytes per chunk
-#define CHUNK_SHADOW (CHUNK_APP >> 3)           // shadow bytes per chunk (8 KiB)
+// Direct-mapped shadow: one shadow byte per aligned 8 app bytes, addressed by
+//   shadow_byte(app) = g_shadow + (app >> SHADOW_SCALE)
+// over a single large reservation. The OS commits shadow pages lazily on first
+// touch (zero-filled == addressable), so only the shadow for memory we actually
+// poison costs anything. Addresses at/above SHADOW_LIMIT are treated as
+// untracked. A flat map makes the lookup a shift+add+load -- and is what lets
+// the check be inlined later (see docs/design/inline-fastpath.md).
 
-typedef struct {
-  uintptr_t key;   // app_addr >> CHUNK_SHIFT
-  int8_t *shadow;  // CHUNK_SHADOW bytes, or NULL if the slot is empty
-} ChunkEntry;
+#define SHADOW_SCALE 3                              // 8 app bytes : 1 shadow byte
+#define SHADOW_LIMIT ((uintptr_t)1 << 44)           // cover app addresses < 16 TiB
+#define SHADOW_BYTES (SHADOW_LIMIT >> SHADOW_SCALE) // 2 TiB of shadow
 
-static ChunkEntry *g_dir = NULL; // open-addressing hash table of chunks
-static size_t g_dir_cap = 0;
-static size_t g_dir_count = 0;
+static int8_t *g_shadow = NULL;
 
-static size_t hash_key(uintptr_t key) {
-  return (size_t)(key * 0x9E3779B97F4A7C15ull); // Fibonacci hashing
-}
-
-static void dir_insert(ChunkEntry *dir, size_t cap, uintptr_t key,
-                       int8_t *shadow) {
-  size_t mask = cap - 1;
-  size_t i = hash_key(key) & mask;
-  while (dir[i].shadow)
-    i = (i + 1) & mask;
-  dir[i].key = key;
-  dir[i].shadow = shadow;
-}
-
-static void dir_grow(void) {
-  size_t new_cap = g_dir_cap ? g_dir_cap * 2 : 1024;
-  ChunkEntry *n = (ChunkEntry *)calloc(new_cap, sizeof(ChunkEntry));
-  if (!n) {
-    fprintf(stderr, "redzone: out of memory growing shadow directory\n");
+static void shadow_init(void) {
+  void *p = mmap(NULL, SHADOW_BYTES, PROT_READ | PROT_WRITE,
+                 MAP_ANON | MAP_PRIVATE, -1, 0);
+  if (p == MAP_FAILED) {
+    fprintf(stderr, "redzone: failed to reserve shadow memory\n");
     abort();
   }
-  for (size_t i = 0; i < g_dir_cap; i++)
-    if (g_dir[i].shadow)
-      dir_insert(n, new_cap, g_dir[i].key, g_dir[i].shadow);
-  free(g_dir);
-  g_dir = n;
-  g_dir_cap = new_cap;
+  g_shadow = (int8_t *)p;
 }
 
-// Return the shadow chunk for `key`, allocating it (and the directory) if
-// `create` is set. A fresh chunk is all-zero, i.e. fully addressable.
-static int8_t *get_chunk(uintptr_t key, int create) {
-  if (!g_dir) {
-    if (!create)
-      return NULL;
-    dir_grow();
-  }
-  if (create && (g_dir_count + 1) * 4 >= g_dir_cap * 3) // keep load factor < 3/4
-    dir_grow();
-
-  size_t mask = g_dir_cap - 1;
-  size_t i = hash_key(key) & mask;
-  while (g_dir[i].shadow) {
-    if (g_dir[i].key == key)
-      return g_dir[i].shadow;
-    i = (i + 1) & mask;
-  }
-  if (!create)
-    return NULL;
-
-  int8_t *chunk = (int8_t *)calloc(CHUNK_SHADOW, 1); // 0 == addressable
-  if (!chunk) {
-    fprintf(stderr, "redzone: out of memory allocating shadow chunk\n");
-    abort();
-  }
-  g_dir[i].key = key;
-  g_dir[i].shadow = chunk;
-  g_dir_count++;
-  return chunk;
-}
-
-static int8_t *shadow_ptr(uintptr_t app, int create) {
-  int8_t *chunk = get_chunk(app >> CHUNK_SHIFT, create);
-  if (!chunk)
-    return NULL;
-  return &chunk[(app & (CHUNK_APP - 1)) >> 3];
+static int8_t *shadow_ptr(uintptr_t app) {
+  if (!g_shadow)
+    shadow_init();
+  uintptr_t idx = app >> SHADOW_SCALE;
+  if (idx >= SHADOW_BYTES)
+    return NULL; // beyond the covered range -> untracked
+  return &g_shadow[idx];
 }
 
 static int8_t shadow_load(uintptr_t app) {
-  int8_t *p = shadow_ptr(app, 0);
-  return p ? *p : 0; // no chunk == addressable
+  int8_t *p = shadow_ptr(app);
+  return p ? *p : 0; // uncommitted/out-of-range == addressable
 }
 
 static void set_shadow_byte(uintptr_t app, int8_t val) {
-  int8_t *p = shadow_ptr(app, 1);
-  *p = val;
+  int8_t *p = shadow_ptr(app);
+  if (p)
+    *p = val;
 }
 
 // Set the shadow for every aligned 8-byte chunk overlapping [start, start+len).
