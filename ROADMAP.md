@@ -70,7 +70,8 @@ Turn a compiler pass into a product people choose to use.
 - **Suppression files** — silence known/third-party issues.
 - **Machine-readable output** — JSON and **SARIF** for tooling.
 - **Build-system recipes** — CMake, Bazel, Make.
-- **CI integrations** — GitHub Actions / GitLab CI; PR annotations via SARIF.
+- ✅ **CI** — GitHub Actions builds the pass and runs the test suite on every
+  push/PR (macOS + Homebrew LLVM). PR annotations via SARIF still to come.
 - **Docs site** — tutorials, examples, troubleshooting.
 
 **Exit criteria:** a new user adopts redzone in an existing project in < 15 min.
@@ -146,8 +147,9 @@ Run alongside every horizon, not in sequence.
 - **Done:** `v0.1`–`v0.3` (heap-overflow + use-after-free, readable reports,
   test suite); `v0.4` shadow memory (O(1) check); `v0.5` leak detection; `v0.6`
   stack-buffer-overflow. Suite is 12/12.
-- **Done (Horizon 3):** the `redzone` CLI wrapper (`build`/`run`).
-- **Now:** SARIF/JSON output and a GitHub Actions CI recipe.
+- **Done (Horizon 3):** the `redzone` CLI wrapper (`build`/`run`); GitHub
+  Actions CI running the suite on every push.
+- **Now:** SARIF/JSON output so editors and CI can consume findings.
 - **Deferred Horizon 2:** global buffer overflows; `aligned_alloc`/`new`/`delete`;
   benchmarks.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.

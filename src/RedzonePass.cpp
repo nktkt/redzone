@@ -32,7 +32,11 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
-#include "llvm/Plugins/PassPlugin.h" // moved here in LLVM 22 (was llvm/Passes/)
+#if __has_include("llvm/Plugins/PassPlugin.h")
+#include "llvm/Plugins/PassPlugin.h" // LLVM 22+
+#else
+#include "llvm/Passes/PassPlugin.h" // LLVM <= 21
+#endif
 #include "llvm/Support/raw_ostream.h"
 
 #include <optional>

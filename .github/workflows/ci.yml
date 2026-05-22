@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: build pass + run test suite
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM and CMake
+        run: brew install llvm cmake
+
+      - name: Put LLVM tools on PATH
+        # Homebrew LLVM is keg-only, so its clang/opt/llvm-config aren't on PATH
+        # by default. The build scripts call them unqualified.
+        run: echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Show toolchain
+        run: |
+          clang --version
+          opt --version
+          cmake --version
+
+      - name: Build the pass and run the test suite
+        # test.sh builds build/libRedzonePass.so on first run, then instruments
+        # and runs every example, asserting the expected outcome.
+        run: ./scripts/test.sh

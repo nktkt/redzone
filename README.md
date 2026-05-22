@@ -1,5 +1,7 @@
 # redzone
 
+[![CI](https://github.com/nktkt/redzone/actions/workflows/ci.yml/badge.svg)](https://github.com/nktkt/redzone/actions/workflows/ci.yml)
+
 > A minimal, educational memory-safety detector for C — built as an LLVM instrumentation pass plus a small runtime. Think of it as a tiny [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html).
 
 `redzone` catches **heap memory errors at runtime** by automatically inserting checks into your program at compile time. You don't change a single line of your code — the LLVM pass rewrites it for you, and the runtime decides whether each memory access is legal.
