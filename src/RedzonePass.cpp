@@ -1,11 +1,15 @@
-//===- RedzonePass.cpp - Phase 1: instrument memory accesses --------------===//
+//===- RedzonePass.cpp - instrument memory accesses -----------------------===//
 //
-// redzone v0.2 (see ROADMAP.md, Horizon 1).
+// redzone v0.3 (see ROADMAP.md, Horizon 1).
 //
-// This pass turns redzone into an actual detector. For every `load`/`store` it
-// inserts a call to the runtime's __redzone_check before the access, and it
-// redirects user `malloc`/`free` calls to __redzone_malloc/__redzone_free so
-// the runtime can track allocations and guard them with red zones.
+// For every `load`/`store` this pass inserts a call to the runtime's
+// __redzone_check before the access, and it redirects user `malloc`/`free`
+// calls to __redzone_malloc/__redzone_free so the runtime can track
+// allocations and guard them with red zones.
+//
+// v0.3 also forwards source locations (file + line, from debug info) into the
+// check calls and the malloc call, so the runtime can report the faulting line
+// and the allocation site.
 //
 // It does NOT touch the runtime itself: functions named `__redzone*` are
 // skipped (instrumenting them would make the runtime's own malloc recurse).
@@ -16,6 +20,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -25,6 +30,8 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Plugins/PassPlugin.h" // moved here in LLVM 22 (was llvm/Passes/)
 #include "llvm/Support/raw_ostream.h"
+
+#include <utility>
 
 using namespace llvm;
 
@@ -40,12 +47,30 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
     IntegerType *I64 = Type::getInt64Ty(Ctx);
     IntegerType *I32 = Type::getInt32Ty(Ctx);
 
-    FunctionCallee Check =
-        M.getOrInsertFunction("__redzone_check", VoidTy, PtrTy, I64, I32);
+    FunctionCallee Check = M.getOrInsertFunction(
+        "__redzone_check", VoidTy, PtrTy, I64, I32, PtrTy, I32);
     FunctionCallee RzMalloc =
-        M.getOrInsertFunction("__redzone_malloc", PtrTy, I64);
+        M.getOrInsertFunction("__redzone_malloc", PtrTy, I64, PtrTy, I32);
     FunctionCallee RzFree =
         M.getOrInsertFunction("__redzone_free", VoidTy, PtrTy);
+
+    // Deduplicated filename string globals, keyed by filename.
+    StringMap<Constant *> StrCache;
+    auto getStr = [&](IRBuilder<> &B, StringRef S) -> Constant * {
+      auto It = StrCache.find(S);
+      if (It != StrCache.end())
+        return It->second;
+      Constant *GV = B.CreateGlobalString(S);
+      StrCache[S] = GV;
+      return GV;
+    };
+    // (file, line) constants for an instruction's debug location, or (null, 0).
+    auto getLoc = [&](IRBuilder<> &B,
+                      Instruction *I) -> std::pair<Constant *, Constant *> {
+      if (const DebugLoc &Loc = I->getDebugLoc())
+        return {getStr(B, Loc->getFilename()), ConstantInt::get(I32, Loc.getLine())};
+      return {ConstantPointerNull::get(PtrTy), ConstantInt::get(I32, 0)};
+    };
 
     unsigned checks = 0, mallocs = 0, frees = 0;
 
@@ -91,15 +116,24 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         uint64_t Size = DL.getTypeStoreSize(AccessTy).getFixedValue();
 
         IRBuilder<> B(I); // insert the check immediately before the access
+        auto [FileC, LineC] = getLoc(B, I);
         B.CreateCall(Check, {Ptr, ConstantInt::get(I64, Size),
-                             ConstantInt::get(I32, IsWrite ? 1 : 0)});
+                             ConstantInt::get(I32, IsWrite ? 1 : 0), FileC, LineC});
         ++checks;
       }
 
+      // Redirect malloc: rebuild the call with the allocation-site location.
       for (CallInst *CI : mallocCalls) {
-        CI->setCalledFunction(RzMalloc);
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI =
+            B.CreateCall(RzMalloc, {CI->getArgOperand(0), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
         ++mallocs;
       }
+      // Redirect free: same signature, just swap the callee.
       for (CallInst *CI : freeCalls) {
         CI->setCalledFunction(RzFree);
         ++frees;

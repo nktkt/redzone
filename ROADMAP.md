@@ -35,7 +35,7 @@ Prove the core idea end to end on small programs.
 - `v0.2` ✅ — **Heap-buffer-overflow and use-after-free detection.** `malloc`
   wrapper + red zones + metadata table; `__redzone_check` validates accesses;
   `__redzone_free` quarantines freed blocks.
-- `v0.3` — **Readable reports:** `file:line` of the faulting access and the
+- `v0.3` ✅ — **Readable reports:** `file:line` of the faulting access and the
   allocation site, via debug info.
 
 **Exit criteria:** a golden corpus of known-bad programs is caught, known-good
@@ -138,9 +138,9 @@ Run alongside every horizon, not in sequence.
 
 ## Now / Next / Later
 
-- **Done:** `v0.1` pass skeleton (Phase 0); `v0.2` heap-buffer-overflow +
-  use-after-free detection (Phase 1).
-- **Now:** Horizon 1, `v0.3` — `file:line` in reports via debug info.
+- **Done:** `v0.1` pass skeleton; `v0.2` heap-overflow + use-after-free
+  detection; `v0.3` readable reports (faulting line + allocation site).
+- **Now:** Horizon 1 wrap-up — broaden the test corpus and edge cases.
 - **Next:** Horizon 2 — shadow memory (the scalability unlock), then stack/global
   coverage and leak detection.
 - **Later:** developer experience, CI integration, and real-world scale.

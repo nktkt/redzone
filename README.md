@@ -40,9 +40,9 @@ Keeping the scope tight is deliberate: nail heap bugs first, expand later.
                          report + abort
 ```
 
-1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write)`. It also redirects user `malloc`/`free` calls to the runtime's versions.
+1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write, file, line)`. It also redirects user `malloc`/`free` calls to the runtime's versions, forwarding the allocation-site `file:line`.
 2. **Runtime library** (C):
-   - `__redzone_malloc` allocates the requested bytes plus surrounding **red zones**, and records `{base, size, freed?}` in a metadata table.
+   - `__redzone_malloc` allocates the requested bytes plus surrounding **red zones**, and records `{base, size, freed?, alloc site}` in a metadata table.
    - `__redzone_free` quarantines the block instead of releasing it immediately, so later access is detectable as **use-after-free**.
    - `__redzone_check` verifies the access falls inside a live region; on a violation it prints a report and aborts.
 
@@ -69,9 +69,10 @@ Example report on a heap overflow:
 
 ```
 ==redzone ERROR: heap-buffer-overflow
-  WRITE of size 4 at 0x104851d30
-  region: 16-byte allocation [0x104851d20, 0x104851d30)
-  0 byte(s) after the region
+  WRITE of size 4 at 0x1015a1d30
+    at examples/heap_overflow.c:14
+  0 byte(s) after a 16-byte region [0x1015a1d20, 0x1015a1d30)
+    allocated at examples/heap_overflow.c:7
 ```
 
 ## Roadmap
@@ -109,11 +110,10 @@ to run it, or just `./scripts/demo.sh`.
 
 ## Status
 
-🚧 Early development. **Phases 0–1 complete** (`v0.2`): the pass instruments
-every load/store and redirects `malloc`/`free`, and the runtime detects
-**heap-buffer-overflow** and **use-after-free** on the bundled examples. Next up
-(`v0.3`): `file:line` in reports via debug info, then shadow memory for scale
-(Horizon 2).
+🚧 Early development. **Through `v0.3`:** the pass instruments every load/store
+and redirects `malloc`/`free`; the runtime detects **heap-buffer-overflow**,
+**use-after-free**, and **double-free**, and reports the faulting `file:line`
+plus the allocation site. Next up: shadow memory for scale (Horizon 2).
 
 ## License
 

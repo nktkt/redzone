@@ -17,15 +17,17 @@ extern "C" {
 #endif
 
 // Drop-in replacements for malloc/free that track allocations and guard them
-// with red zones. The pass redirects user malloc/free calls to these.
-void *__redzone_malloc(size_t size);
+// with red zones. The pass redirects user malloc/free calls to these; `file`
+// and `line` record the allocation site for diagnostics (may be NULL/0).
+void *__redzone_malloc(size_t size, const char *file, int line);
 void __redzone_free(void *ptr);
 
 // Validate a memory access of `size` bytes at `addr`. `is_write` is 1 for
-// stores, 0 for loads. Aborts with a diagnostic if the access is illegal.
-// Addresses that belong to no tracked heap allocation (e.g. stack/global)
-// are allowed.
-void __redzone_check(const void *addr, size_t size, int is_write);
+// stores, 0 for loads; `file`/`line` locate the access (may be NULL/0). Aborts
+// with a diagnostic if the access is illegal. Addresses that belong to no
+// tracked heap allocation (e.g. stack/global) are allowed.
+void __redzone_check(const void *addr, size_t size, int is_write,
+                     const char *file, int line);
 
 #ifdef __cplusplus
 }
