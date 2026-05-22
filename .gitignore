@@ -6,6 +6,24 @@
 *.ll
 *.bc
 a.out
+*.dSYM/
+
+# Instrumented example binaries produced by ./scripts/redzone in the repo root
+/big_valid
+/calloc_overflow
+/double_free
+/heap_overflow
+/invalid_free
+/memory_leak
+/off_by_one_read
+/realloc_grow
+/sample
+/stack_overflow
+/two_allocs_valid
+/underflow_write
+/use_after_free
+/use_after_free_write
+/valid
 
 # Editor / OS
 .DS_Store
