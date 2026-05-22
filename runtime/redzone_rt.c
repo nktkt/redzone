@@ -207,6 +207,145 @@ static int byte_poisoned(uintptr_t app) {
 }
 
 //===----------------------------------------------------------------------===//
+// Output formats (text / json / sarif), selected via the REDZONE_FORMAT env var
+//===----------------------------------------------------------------------===//
+
+typedef struct {
+  const char *kind;  // error kind / SARIF ruleId
+  int is_write;      // 1=write, 0=read, -1=not applicable (leak/free)
+  size_t size;       // access size, or leaked bytes
+  uintptr_t addr;    // faulting/relevant address (0 if N/A)
+  const char *file;  // location file (may be NULL)
+  int line;          // location line
+  int has_region;    // heap region details present?
+  size_t region_size;
+  int freed; // region already freed?
+  const char *alloc_file;
+  int alloc_line;
+} Finding;
+
+typedef enum { FMT_TEXT, FMT_JSON, FMT_SARIF } rz_format_t;
+
+static rz_format_t rz_format(void) {
+  static int cached = -1;
+  if (cached < 0) {
+    const char *f = getenv("REDZONE_FORMAT");
+    if (f && strcmp(f, "json") == 0)
+      cached = FMT_JSON;
+    else if (f && strcmp(f, "sarif") == 0)
+      cached = FMT_SARIF;
+    else
+      cached = FMT_TEXT;
+  }
+  return (rz_format_t)cached;
+}
+
+static void json_str(FILE *o, const char *s) {
+  fputc('"', o);
+  for (; s && *s; s++) {
+    unsigned char c = (unsigned char)*s;
+    switch (c) {
+    case '"': fputs("\\\"", o); break;
+    case '\\': fputs("\\\\", o); break;
+    case '\n': fputs("\\n", o); break;
+    case '\r': fputs("\\r", o); break;
+    case '\t': fputs("\\t", o); break;
+    default:
+      if (c < 0x20)
+        fprintf(o, "\\u%04x", c);
+      else
+        fputc((int)c, o);
+    }
+  }
+  fputc('"', o);
+}
+
+static void json_finding(FILE *o, const Finding *fd) {
+  fputs("{\"tool\":\"redzone\",\"error\":", o);
+  json_str(o, fd->kind);
+  if (fd->is_write >= 0)
+    fprintf(o, ",\"access\":\"%s\"", fd->is_write ? "write" : "read");
+  fprintf(o, ",\"size\":%zu", fd->size);
+  if (fd->addr)
+    fprintf(o, ",\"address\":\"0x%llx\"", (unsigned long long)fd->addr);
+  if (fd->file) {
+    fputs(",\"location\":{\"file\":", o);
+    json_str(o, fd->file);
+    fprintf(o, ",\"line\":%d}", fd->line);
+  }
+  if (fd->has_region) {
+    fprintf(o, ",\"region\":{\"size\":%zu", fd->region_size);
+    if (fd->freed)
+      fputs(",\"freed\":true", o);
+    if (fd->alloc_file) {
+      fputs(",\"allocated\":{\"file\":", o);
+      json_str(o, fd->alloc_file);
+      fprintf(o, ",\"line\":%d}", fd->alloc_line);
+    }
+    fputc('}', o);
+  }
+  fputc('}', o);
+}
+
+static void sarif_doc(FILE *o, const Finding *fds, size_t n) {
+  fputs("{\"version\":\"2.1.0\",\"$schema\":"
+        "\"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/"
+        "Schemata/sarif-schema-2.1.0.json\",\"runs\":[{\"tool\":{\"driver\":{"
+        "\"name\":\"redzone\",\"informationUri\":"
+        "\"https://github.com/nktkt/redzone\",\"rules\":[]}},\"results\":[",
+        o);
+  for (size_t i = 0; i < n; i++) {
+    const Finding *fd = &fds[i];
+    char msg[256];
+    if (fd->is_write >= 0)
+      snprintf(msg, sizeof msg, "%s of size %zu (%s)",
+               fd->is_write ? "WRITE" : "READ", fd->size, fd->kind);
+    else
+      snprintf(msg, sizeof msg, "%zu byte(s) (%s)", fd->size, fd->kind);
+    if (i)
+      fputc(',', o);
+    fputs("{\"ruleId\":", o);
+    json_str(o, fd->kind);
+    fputs(",\"level\":\"error\",\"message\":{\"text\":", o);
+    json_str(o, msg);
+    fputc('}', o);
+    if (fd->file) {
+      fputs(",\"locations\":[{\"physicalLocation\":{\"artifactLocation\":{"
+            "\"uri\":",
+            o);
+      json_str(o, fd->file);
+      fprintf(o, "},\"region\":{\"startLine\":%d}}}]", fd->line);
+    }
+    fputc('}', o);
+  }
+  fputs("]}]}\n", o);
+}
+
+// Emit a single finding in the active machine-readable format, then abort.
+static void emit_finding_and_abort(const Finding *fd) {
+  if (rz_format() == FMT_JSON) {
+    json_finding(stderr, fd);
+    fputc('\n', stderr);
+  } else {
+    sarif_doc(stderr, fd, 1);
+  }
+  abort();
+}
+
+// Report a free()-time error (double/invalid free), honoring the format.
+static void report_free_error(const char *kind, const void *ptr) {
+  if (rz_format() != FMT_TEXT) {
+    Finding fd = {0};
+    fd.kind = kind;
+    fd.is_write = -1;
+    fd.addr = (uintptr_t)ptr;
+    emit_finding_and_abort(&fd);
+  }
+  fprintf(stderr, "==redzone ERROR: %s of %p\n", kind, ptr);
+  abort();
+}
+
+//===----------------------------------------------------------------------===//
 // Allocation / deallocation
 //===----------------------------------------------------------------------===//
 
@@ -265,15 +404,10 @@ void __redzone_free(void *ptr) {
   Block *b = find_block((uintptr_t)ptr);
   if (!b)
     return; // not one of ours; ignore
-  if ((uintptr_t)ptr != b->user_addr) {
-    fprintf(stderr, "==redzone ERROR: invalid-free of %p (not an allocation start)\n",
-            ptr);
-    abort();
-  }
-  if (b->freed) {
-    fprintf(stderr, "==redzone ERROR: double-free of %p\n", ptr);
-    abort();
-  }
+  if ((uintptr_t)ptr != b->user_addr)
+    report_free_error("invalid-free", ptr);
+  if (b->freed)
+    report_free_error("double-free", ptr);
   b->freed = 1; // quarantine: keep metadata so use-after-free stays detectable
   // Poison the whole user region as freed.
   set_shadow_range(b->user_addr, (b->user_size + 7) & ~(size_t)7, FREED_POISON);
@@ -314,6 +448,21 @@ void __redzone_stack_leave(void *base_v, size_t user_size) {
 
 static void report(const char *kind, const void *addr, size_t size, int is_write,
                    const char *file, int line, Block *b) {
+  if (rz_format() != FMT_TEXT) {
+    Finding fd = {0};
+    fd.kind = kind;
+    fd.is_write = is_write;
+    fd.size = size;
+    fd.addr = (uintptr_t)addr;
+    fd.file = file;
+    fd.line = line;
+    fd.has_region = 1;
+    fd.region_size = b->user_size;
+    fd.freed = b->freed;
+    fd.alloc_file = b->alloc_file;
+    fd.alloc_line = b->alloc_line;
+    emit_finding_and_abort(&fd);
+  }
   uintptr_t a = (uintptr_t)addr;
   void *lo = (void *)b->user_addr;
   void *hi = (void *)(b->user_addr + b->user_size);
@@ -345,6 +494,16 @@ static void report(const char *kind, const void *addr, size_t size, int is_write
 // Report for a non-heap region (stack/global) where we have no table entry.
 static void report_simple(const char *kind, const void *addr, size_t size,
                           int is_write, const char *file, int line) {
+  if (rz_format() != FMT_TEXT) {
+    Finding fd = {0};
+    fd.kind = kind;
+    fd.is_write = is_write;
+    fd.size = size;
+    fd.addr = (uintptr_t)addr;
+    fd.file = file;
+    fd.line = line;
+    emit_finding_and_abort(&fd);
+  }
   fprintf(stderr, "==redzone ERROR: %s\n", kind);
   fprintf(stderr, "  %s of size %zu at %p\n", is_write ? "WRITE" : "READ", size,
           addr);
@@ -396,6 +555,47 @@ static void report_leaks(void) {
     }
   if (leaked == 0)
     return;
+
+  rz_format_t fmt = rz_format();
+  if (fmt != FMT_TEXT) {
+    if (fmt == FMT_JSON) {
+      for (size_t i = 0; i < g_count; i++) {
+        Block *b = &g_blocks[i];
+        if (b->freed)
+          continue;
+        Finding fd = {0};
+        fd.kind = "memory-leak";
+        fd.is_write = -1;
+        fd.size = b->user_size;
+        fd.addr = b->user_addr;
+        fd.file = b->alloc_file;
+        fd.line = b->alloc_line;
+        json_finding(stderr, &fd);
+        fputc('\n', stderr);
+      }
+    } else { // one SARIF document with a result per leak
+      Finding *arr = (Finding *)calloc(leaked, sizeof(Finding));
+      if (arr) {
+        size_t k = 0;
+        for (size_t i = 0; i < g_count; i++) {
+          Block *b = &g_blocks[i];
+          if (b->freed)
+            continue;
+          arr[k].kind = "memory-leak";
+          arr[k].is_write = -1;
+          arr[k].size = b->user_size;
+          arr[k].addr = b->user_addr;
+          arr[k].file = b->alloc_file;
+          arr[k].line = b->alloc_line;
+          k++;
+        }
+        sarif_doc(stderr, arr, k);
+        free(arr);
+      }
+    }
+    fflush(NULL);
+    _Exit(1);
+  }
 
   fprintf(stderr, "==redzone ERROR: memory-leak\n");
   fprintf(stderr, "  %zu allocation(s) never freed, %zu byte(s) total\n", leaked,

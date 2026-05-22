@@ -91,6 +91,20 @@ Example report on a heap overflow:
     allocated at examples/heap_overflow.c:7
 ```
 
+## Output formats
+
+By default redzone prints human-readable reports. Set `REDZONE_FORMAT` for
+machine-readable output that editors and CI can consume:
+
+```bash
+REDZONE_FORMAT=json  ./scripts/redzone run prog.c   # one JSON object per finding (JSON Lines)
+REDZONE_FORMAT=sarif ./scripts/redzone run prog.c   # a SARIF 2.1.0 document
+```
+
+Findings are written to **stderr** (kept separate from the program's own
+stdout). The SARIF output can be uploaded to GitHub code scanning to annotate
+pull requests.
+
 ## Roadmap
 
 The near-term goal is a correct heap checker; the long-term goal is a scalable,
