@@ -42,6 +42,8 @@ CASES=(
   "cpp_new_valid.cpp:OK"
   "cpp_new_overflow.cpp:heap-buffer-overflow"
   "cpp_delete_uaf.cpp:use-after-free"
+  "threaded_valid.c:OK"
+  "threaded_overflow.c:heap-buffer-overflow"
 )
 
 # Build the pass plugin only if it isn't already present.

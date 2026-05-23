@@ -12,12 +12,16 @@ The name comes from the *red zones*: poisoned guard regions placed around every 
 
 | Detected ✅ | Out of scope (for now) ❌ |
 |---|---|
-| Heap buffer overflow (read/write past a `malloc`'d region) | Data races (multithreading) |
+| Heap buffer overflow (read/write past a `malloc`'d region) | *Detecting* data races |
 | Stack buffer overflow (past a fixed-size local) | Underflow of an *external* global |
 | Global buffer overflow (static/internal **and** external globals) | C++17 aligned `new`/`delete` |
-| Use-after-free (read/write after a region is freed) | Performance optimization |
+| Use-after-free (read/write after a region is freed) | |
 | Double-free and invalid-free | |
 | Memory leaks (allocations never freed, reported at exit) | |
+
+The runtime is **thread-safe** — it works correctly in multithreaded programs (no
+false positives or crashes from concurrent allocations); it just doesn't *detect*
+data races, which is a separate analysis.
 
 Keeping the scope tight is deliberate: nail heap bugs first, expand later.
 
@@ -165,6 +169,8 @@ full long-range plan (Horizons 1–5, scaling strategy, and success metrics).
 - LLVM / Clang **with development headers** (Homebrew `llvm` works well)
 - CMake (to build the pass plugin)
 - A C++17 toolchain and a C compiler
+- POSIX threads — the runtime uses a mutex (on macOS it's in libSystem; on Linux
+  link the instrumented program with `-pthread`)
 
 > Developed and tested against LLVM 22. Note that in LLVM 22 the plugin header
 > lives at `llvm/Plugins/PassPlugin.h` (it was `llvm/Passes/` in older releases).
@@ -197,11 +203,12 @@ and **memory leaks** across the full C/C++ allocator surface —
 `new`/`new[]`/`delete`/`delete[]` — reporting the faulting `file:line` and a
 **symbolized stack trace** (plus the allocation site for heap bugs). The
 per-access check uses **shadow memory** (O(1)). Globals are covered whether
-static/internal or external (cross-TU). It ships a `redzone` CLI, text/JSON/SARIF
-output, **leak suppressions**, CMake & Make integration, and a 23-case suite plus
+static/internal or external (cross-TU), and the runtime is **thread-safe** (safe
+to use in multithreaded programs). It ships a `redzone` CLI, text/JSON/SARIF
+output, **leak suppressions**, CMake & Make integration, and a 25-case suite plus
 format, cross-TU, report, integration, and performance-regression checks in CI.
-Remaining gaps: C++17 aligned `new`/`delete`, underflow of an external global,
-and threading.
+Remaining gaps: *detecting* data races, C++17 aligned `new`/`delete`, and
+underflow of an external global.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
 the allocator path is **O(1)** per `malloc`/`free` (each block finds its metadata

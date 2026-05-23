@@ -136,7 +136,10 @@ Run alongside every horizon, not in sequence.
   (static check-count budgets + loose slowdown ceilings).
 - **Release engineering** — CI/CD, prebuilt binaries, packaging (Homebrew, apt).
 - **Security & hardening** — the tool itself must be robust against the inputs
-  it analyzes.
+  it analyzes. 🟡 The runtime is now **thread-safe** (v0.17): an allocation-table
+  mutex with a lock-free per-access fast path, so it runs correctly under
+  multithreading (stress-tested). Detecting data races is a separate Horizon 5
+  checker.
 - **Community** — contribution guide, issue templates, governance, changelog.
 
 ## What "scalable" means here
@@ -170,8 +173,10 @@ Run alongside every horizon, not in sequence.
   the allocator path ~800x → ~7.5x (`docs/benchmarks.md`), with a `bench.sh
   --check` regression gate now in CI. **v0.14** added `aligned_alloc`/
   `posix_memalign` and C++ `new`/`delete` coverage; **v0.15** added external
-  (non-static) global coverage. Next: cross-block / loop-range check elimination
-  (the remaining `gather` overhead) and incremental instrumentation.
+  (non-static) global coverage; **v0.16** added stack traces + leak suppressions;
+  **v0.17** made the runtime **thread-safe** (allocation-table mutex; the
+  per-access fast path stays lock-free). Next: cross-block / loop-range check
+  elimination (the remaining `gather` overhead) and incremental instrumentation.
 - **Also deferred:** C++17 aligned `new`/`delete`, external-global underflow,
   Bazel.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.

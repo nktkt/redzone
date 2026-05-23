@@ -33,6 +33,7 @@
 
 #include <errno.h>
 #include <execinfo.h> // backtrace / backtrace_symbols for stack traces
+#include <pthread.h>  // serialize allocation-table access across threads
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,6 +69,22 @@ static Block *g_blocks = NULL;
 static size_t g_count = 0;
 static size_t g_cap = 0;
 
+// Thread safety. The allocation table is the only shared state that needs a
+// lock: record_block reallocs g_blocks (moving it) and bumps g_count, which
+// races with concurrent readers. This mutex serializes ALL table access
+// (record_block, find_block, block_from_user_ptr, the freed-flag set, leak
+// iteration). A Block* obtained under the lock must be used only while the lock
+// is held, since a concurrent append may move the array.
+//
+// The shadow memory needs NO lock: freed blocks are quarantined forever (never
+// returned to libc), so a freed address is never re-malloc'd -- shadow writes
+// only ever touch fresh or freed memory at disjoint addresses, and distinct
+// 16-aligned blocks never share an 8-byte shadow chunk. The inlined per-access
+// fast path therefore stays lock-free; only the allocator/error paths lock.
+static pthread_mutex_t g_table_lock = PTHREAD_MUTEX_INITIALIZER;
+#define TABLE_LOCK() pthread_mutex_lock(&g_table_lock)
+#define TABLE_UNLOCK() pthread_mutex_unlock(&g_table_lock)
+
 // O(1) back-reference stashed in each heap block's left red zone, so free() and
 // realloc() can recover the block's metadata directly from the user pointer
 // instead of scanning g_blocks. We store the *index* (stable across the realloc
@@ -85,6 +102,7 @@ _Static_assert(REDZONE_SIZE >= sizeof(Header), "red zone too small for header");
 // Linear scan over every recorded block. O(n), so it must stay off the hot
 // path: it is reached only on the error/slow path (a flagged access in
 // __redzone_check, or an interior/foreign pointer passed to free/realloc).
+// Caller must hold g_table_lock; the returned Block* is valid only under it.
 static Block *find_block(uintptr_t addr) {
   for (size_t i = 0; i < g_count; i++) {
     Block *b = &g_blocks[i];
@@ -94,7 +112,7 @@ static Block *find_block(uintptr_t addr) {
   return NULL;
 }
 
-// Returns the block's index in g_blocks.
+// Returns the block's index in g_blocks. Caller must hold g_table_lock.
 static size_t record_block(uintptr_t real_base, size_t total_size,
                            uintptr_t user_addr, size_t user_size,
                            const char *file, int line) {
@@ -211,6 +229,7 @@ static int byte_poisoned(uintptr_t app) {
 // The header sits in poisoned red-zone memory just below the user region. We
 // gate the header read on the shadow (always safe to read) being RZ_POISON
 // there, so free() of a foreign pointer never dereferences unmapped memory.
+// Caller must hold g_table_lock; the returned Block* is valid only under it.
 static Block *block_from_user_ptr(void *ptr) {
   uintptr_t u = (uintptr_t)ptr;
   if (u < sizeof(Header))
@@ -468,7 +487,12 @@ static void *rz_allocate(size_t size, size_t align, const char *file, int line) 
   // platform's 16-aligned malloc and align == REDZONE_SIZE this is base+16, i.e.
   // identical to the plain malloc layout.
   uintptr_t user = ((uintptr_t)base + REDZONE_SIZE + (align - 1)) & ~(align - 1);
+  TABLE_LOCK();
   size_t idx = record_block((uintptr_t)base, total, user, size, file, line);
+  TABLE_UNLOCK();
+  // The shadow and header writes below need no lock: this block isn't published
+  // to any other thread yet, and its shadow chunks are disjoint from every other
+  // block's (see the g_table_lock note).
 
   // Poison the whole block, then carve out the addressable user region.
   set_shadow_range((uintptr_t)base, total, RZ_POISON);
@@ -539,38 +563,50 @@ void *__redzone_realloc(void *ptr, size_t size, const char *file, int line) {
     __redzone_free(ptr);
     return NULL;
   }
-  void *np = __redzone_malloc(size, file, line);
+  void *np = __redzone_malloc(size, file, line); // locks internally
   if (!np)
     return NULL;
+  // Find how many bytes to carry over, under the lock; don't hold it across the
+  // malloc above or the free below (both lock), to avoid re-entrant deadlock.
+  TABLE_LOCK();
   Block *old = block_from_user_ptr(ptr);
   if (!old)
     old = find_block((uintptr_t)ptr); // interior pointer: fall back to scanning
-  if (old && !old->freed) {
-    size_t copy = old->user_size < size ? old->user_size : size;
+  size_t copy = (old && !old->freed)
+                    ? (old->user_size < size ? old->user_size : size)
+                    : 0;
+  TABLE_UNLOCK();
+  if (copy)
     memcpy(np, ptr, copy);
-  }
-  __redzone_free(ptr); // quarantine the old block
+  __redzone_free(ptr); // quarantine the old block (locks internally)
   return np;
 }
 
 void __redzone_free(void *ptr) {
   if (!ptr)
     return;
+  TABLE_LOCK();
   Block *b = block_from_user_ptr(ptr); // O(1): the steady-state path
   if (!b) {
     // Not the start of one of our blocks. Distinguish an interior pointer into
     // one of ours (invalid-free) from a foreign pointer (ignore). This scan is
     // O(n), but it only runs on the error path -- never in steady state.
     b = find_block((uintptr_t)ptr);
-    if (!b)
+    if (!b) {
+      TABLE_UNLOCK();
       return; // not one of ours; ignore
-    report_free_error("invalid-free", ptr); // ours, but not at the user base
+    }
+    report_free_error("invalid-free", ptr); // aborts (lock held; process dies)
   }
   if (b->freed)
-    report_free_error("double-free", ptr);
+    report_free_error("double-free", ptr); // aborts
   b->freed = 1; // quarantine: keep metadata so use-after-free stays detectable
-  // Poison the whole user region as freed.
-  set_shadow_range(b->user_addr, (b->user_size + 7) & ~(size_t)7, FREED_POISON);
+  // Copy what we need before unlocking, since `b` may move once we release.
+  uintptr_t user_addr = b->user_addr;
+  size_t user_size = b->user_size;
+  TABLE_UNLOCK();
+  // Poison the whole user region as freed (shadow needs no lock).
+  set_shadow_range(user_addr, (user_size + 7) & ~(size_t)7, FREED_POISON);
 }
 
 //===----------------------------------------------------------------------===//
@@ -728,15 +764,20 @@ void __redzone_check(const void *addr, size_t size, int is_write,
   if (!byte_poisoned(a) && !byte_poisoned(a + size - 1))
     return;
 
-  // Slow path: only reached on a violation. Classify it with the table.
+  // Slow path: only reached on a violation. Classify it with the table. `b`
+  // points into g_blocks, so it (and report, which reads it) must run under the
+  // lock; report aborts, so the lock dies with the process.
+  TABLE_LOCK();
   Block *b = find_block(a);
   if (b) {
     if (b->freed)
       report("use-after-free", addr, size, is_write, file, line, b);
     else
       report("heap-buffer-overflow", addr, size, is_write, file, line, b);
+    TABLE_UNLOCK(); // unreachable (report aborts); keeps the lock balanced
     return;
   }
+  TABLE_UNLOCK();
   // Not a tracked heap block: a poisoned stack or global red zone. Read the
   // poison code (from whichever checked byte carries it) to name it precisely.
   int8_t s1 = shadow_load(a);
@@ -824,14 +865,19 @@ static int is_unsuppressed_leak(const Block *b) {
 
 static void report_leaks(void) {
   load_suppressions();
+  // Hold the table lock across the whole walk; a thread could still be running.
+  // Every exit below either returns (after unlocking) or _Exit()s the process.
+  TABLE_LOCK();
   size_t leaked = 0, bytes = 0;
   for (size_t i = 0; i < g_count; i++)
     if (is_unsuppressed_leak(&g_blocks[i])) {
       leaked++;
       bytes += g_blocks[i].user_size;
     }
-  if (leaked == 0)
+  if (leaked == 0) {
+    TABLE_UNLOCK();
     return;
+  }
 
   rz_format_t fmt = rz_format();
   if (fmt != FMT_TEXT) {
