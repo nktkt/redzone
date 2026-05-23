@@ -236,11 +236,12 @@ per-access check uses **shadow memory** (O(1)). Globals are covered whether
 static/internal or external (cross-TU), and the runtime is **thread-safe** (safe
 to use in multithreaded programs). Reports are **colorized** (TTY-aware) with
 **deduplicated** leak summaries. Instrumented output is **reproducible**, so
-incremental builds and compiler caches (**ccache**) work — see
+incremental builds and compiler caches (**ccache** and **sccache**) work — see
 [docs/caching.md](docs/caching.md). It ships a `redzone` CLI, text/JSON/SARIF
 output, **leak suppressions**, a per-function **opt-out** (`REDZONE_NO_INSTRUMENT`),
 CMake & Make integration, and a 26-case suite plus format, cross-TU, report,
-opt-out, determinism, ccache, integration, and performance-regression checks in CI. Remaining gaps: *detecting* data races,
+opt-out, determinism, ccache, sccache, integration, and performance-regression
+checks in CI. Remaining gaps: *detecting* data races,
 C++17 aligned `new`/`delete`, and underflow of an external global.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,

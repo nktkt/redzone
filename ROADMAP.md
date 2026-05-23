@@ -102,9 +102,10 @@ Run on huge codebases and many builds without pain.
   skipping and a file-level ignore-list remain.
 - 🟡 **Incremental builds & caching** — instrumented output is **reproducible**
   (byte-identical; verified in CI), so per-TU incremental rebuilds and compiler
-  caches work. **ccache** is supported and tested (list the plugin in
-  `CCACHE_EXTRAFILES` so a plugin rebuild busts the cache); see
-  [`docs/caching.md`](docs/caching.md). `sccache` and distributed builds remain.
+  caches work. **ccache** and **sccache** are both supported and tested (ccache:
+  put the plugin in `CCACHE_EXTRAFILES`; sccache: version the plugin filename) —
+  see [`docs/caching.md`](docs/caching.md). sccache's shared/distributed backends
+  let a fleet share the cache; bespoke distributed-build systems remain.
 - **Parallel / distributed test execution.**
 - **Cross-platform** — Linux, macOS, Windows; x86-64 and ARM64;
   cross-compilation.

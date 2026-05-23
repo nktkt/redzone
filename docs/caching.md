@@ -63,8 +63,23 @@ export CCACHE_EXTRAFILES = $(abspath build/libRedzonePass.so)
 
 ## sccache and distributed builds
 
-`sccache` caches on the same principles. It does not have a direct
-`CCACHE_EXTRAFILES` equivalent, so the simplest robust approach is to make the
-plugin path encode its version (e.g. `libRedzonePass-<hash>.so`) so a new plugin
-changes the command line and naturally misses the cache. The reproducibility
-guarantee above is what lets any such cache be used safely.
+`sccache` caches redzone-instrumented compiles too (verified by
+[`scripts/test_ccache.sh`](../scripts/test_ccache.sh)'s sibling
+[`scripts/test_sccache.sh`](../scripts/test_sccache.sh)):
+
+```bash
+# sccache is a generic compiler wrapper: just prefix the compile.
+sccache clang -O2 -g -fpass-plugin="$PWD/build/libRedzonePass.so" -c foo.c -o foo.o
+```
+
+The caveat is different from ccache: sccache has **no `CCACHE_EXTRAFILES`
+equivalent**. It keys on the command line (which includes the plugin *path*) but
+not the plugin's *contents*, so rebuilding the plugin at the same path would
+serve stale objects. The robust fix is to **encode the plugin's version in its
+filename** — e.g. `libRedzonePass-<version>.so` — so a new redzone changes the
+command line and misses the cache cleanly. The test confirms that a different
+plugin path is a miss while the same path hits.
+
+Because sccache supports shared/distributed backends (local disk, Redis, S3,
+GCS, …), this — together with the byte-for-byte reproducibility above — lets a
+whole team or CI fleet share a redzone build cache.

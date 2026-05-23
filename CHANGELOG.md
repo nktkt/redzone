@@ -9,7 +9,11 @@ development milestones that led to it (the commit history references them).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **sccache** compatibility, alongside ccache: instrumented compiles are
+  cacheable and correct, and a versioned plugin filename busts the cache (sccache
+  has no `CCACHE_EXTRAFILES`). Verified by `scripts/test_sccache.sh` in CI;
+  documented in [`docs/caching.md`](docs/caching.md).
 
 ## [0.19.0] — 2026-05-23
 
