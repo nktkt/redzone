@@ -18,10 +18,44 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_key_t g_self_key; // TLS: this thread's rz_thread*
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 static unsigned long g_races;    // total races reported (under g_lock)
-static int g_verbose;            // print each race? (REDZONE_RACE_VERBOSE)
+static int g_verbose;            // report every race, no dedup? (REDZONE_RACE_VERBOSE)
 
 #define LOCK() pthread_mutex_lock(&g_lock)
 #define UNLOCK() pthread_mutex_unlock(&g_lock)
+
+// Dedup detailed race reports by (line, prev-line) so a hot racy loop prints a
+// handful of distinct reports, not thousands. The exit summary still counts all
+// races. Decided under g_lock; the printing happens after the lock is released.
+#define RZ_RACE_REPORT_CAP 16
+static int g_report_lines[RZ_RACE_REPORT_CAP][2];
+static int g_report_n;
+
+static int should_report(int line, int prev_line) { // call under g_lock
+  if (g_verbose)
+    return 1;
+  for (int i = 0; i < g_report_n; i++)
+    if (g_report_lines[i][0] == line && g_report_lines[i][1] == prev_line)
+      return 0; // this pair was already reported
+  if (g_report_n >= RZ_RACE_REPORT_CAP)
+    return 0; // cap reached; the exit summary still counts these
+  g_report_lines[g_report_n][0] = line;
+  g_report_lines[g_report_n][1] = prev_line;
+  g_report_n++;
+  return 1;
+}
+
+static void print_race(int is_write, int tid, uintptr_t addr, const char *file,
+                       int line, const rz_access *prev) {
+  fflush(stdout); // keep the program's own output ahead of the report
+  fprintf(stderr, "==redzone WARNING: data race\n");
+  fprintf(stderr, "  %s by thread %d at %s:%d\n", is_write ? "write" : "read",
+          tid, file ? file : "<unknown>", line);
+  if (prev && prev->valid)
+    fprintf(stderr, "  previous %s by thread %d at %s:%d\n",
+            prev->is_write ? "write" : "read", prev->tid,
+            prev->file ? prev->file : "<unknown>", prev->line);
+  fprintf(stderr, "  address %p\n", (void *)addr);
+}
 
 //===----------------------------------------------------------------------===//
 // pthread_t -> child rz_thread* registry, for join. Small grow-only array of
@@ -306,7 +340,8 @@ void rz_rt_atomic_release(const volatile void *addr) {
   rz_rt_mutex_unlock((void *)(uintptr_t)addr);
 }
 
-static void access_range(uintptr_t addr, size_t size, int is_write) {
+static void access_range(uintptr_t addr, size_t size, int is_write,
+                         const char *file, int line) {
   rz_thread *s = self();
   if (!s)
     return;
@@ -317,28 +352,36 @@ static void access_range(uintptr_t addr, size_t size, int is_write) {
   int tid = s->tid;
   unsigned long hits = 0;
   uintptr_t hit_word = 0;
+  rz_access prev; // the conflicting prior access, for the report
+  int do_report = 0;
   LOCK();
   for (uintptr_t w = first; w <= last; w++) {
-    if (rz_race_access(&g_state, s, w << 3, is_write)) {
-      if (!hits)
+    rz_access p;
+    if (rz_race_access_loc(&g_state, s, w << 3, is_write, file, line, &p)) {
+      if (!hits) {
         hit_word = w << 3;
+        prev = p;
+      }
       hits++;
     }
   }
-  g_races += hits;
+  if (hits) {
+    g_races += hits;
+    do_report = should_report(line, prev.line);
+  }
   UNLOCK();
-  if (hits && g_verbose)
-    fprintf(stderr,
-            "[redzone] data race: %s by thread %d at %p\n",
-            is_write ? "write" : "read", tid, (void *)hit_word);
+  if (do_report)
+    print_race(is_write, tid, hit_word, file, line, &prev);
 }
 
-void rz_rt_read(const volatile void *addr, size_t size) {
-  access_range((uintptr_t)addr, size, 0);
+void rz_rt_read(const volatile void *addr, size_t size, const char *file,
+                int line) {
+  access_range((uintptr_t)addr, size, 0, file, line);
 }
 
-void rz_rt_write(const volatile void *addr, size_t size) {
-  access_range((uintptr_t)addr, size, 1);
+void rz_rt_write(const volatile void *addr, size_t size, const char *file,
+                 int line) {
+  access_range((uintptr_t)addr, size, 1, file, line);
 }
 
 unsigned long rz_rt_race_count(void) {

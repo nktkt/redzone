@@ -44,6 +44,8 @@ typedef struct {
   int tid;          // the accessing thread
   rz_epoch_t epoch; // that thread's epoch at the time of the access
   int is_write;     // 1 = write, 0 = read
+  const char *file; // source file of this access (for reports); may be NULL
+  int line;         // source line, or 0
 } rz_access;
 
 // Does a new access -- by thread `tid`, with vector clock `cur`, writing iff
@@ -102,6 +104,13 @@ void rz_thread_init(rz_race_state *s, rz_thread *t);
 // Record an access to `addr` by thread `t`; returns 1 if it races with a
 // previously recorded access, else 0.
 int rz_race_access(rz_race_state *s, rz_thread *t, uintptr_t addr, int is_write);
+
+// As rz_race_access, but also stamps the access with its source location
+// (`file`/`line`) and, when it races, copies the conflicting prior access into
+// *out_prev (if non-NULL) so the caller can report both sides.
+int rz_race_access_loc(rz_race_state *s, rz_thread *t, uintptr_t addr,
+                       int is_write, const char *file, int line,
+                       rz_access *out_prev);
 
 // Synchronization events that create happens-before edges.
 void rz_sync_init(rz_sync *m);

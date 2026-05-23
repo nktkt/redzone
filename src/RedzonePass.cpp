@@ -639,15 +639,35 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
     Type *VoidTy = Type::getVoidTy(Ctx);
     PointerType *PtrTy = PointerType::getUnqual(Ctx);
     IntegerType *I64 = Type::getInt64Ty(Ctx);
+    IntegerType *I32 = Type::getInt32Ty(Ctx);
 
     FunctionCallee RaceRead =
-        M.getOrInsertFunction("rz_rt_read", VoidTy, PtrTy, I64);
+        M.getOrInsertFunction("rz_rt_read", VoidTy, PtrTy, I64, PtrTy, I32);
     FunctionCallee RaceWrite =
-        M.getOrInsertFunction("rz_rt_write", VoidTy, PtrTy, I64);
+        M.getOrInsertFunction("rz_rt_write", VoidTy, PtrTy, I64, PtrTy, I32);
     FunctionCallee AtomicAcquire =
         M.getOrInsertFunction("rz_rt_atomic_acquire", VoidTy, PtrTy);
     FunctionCallee AtomicRelease =
         M.getOrInsertFunction("rz_rt_atomic_release", VoidTy, PtrTy);
+
+    // Deduplicated filename globals + (file, line) for an instruction's debug
+    // location, mirroring address mode so race reports carry source positions.
+    StringMap<Constant *> StrCache;
+    auto getStr = [&](IRBuilder<> &B, StringRef S) -> Constant * {
+      auto It = StrCache.find(S);
+      if (It != StrCache.end())
+        return It->second;
+      Constant *GV = B.CreateGlobalString(S);
+      StrCache[S] = GV;
+      return GV;
+    };
+    auto getLoc = [&](IRBuilder<> &B,
+                      Instruction *I) -> std::pair<Constant *, Constant *> {
+      if (const DebugLoc &Loc = I->getDebugLoc())
+        return {getStr(B, Loc->getFilename()),
+                ConstantInt::get(I32, Loc.getLine())};
+      return {ConstantPointerNull::get(PtrTy), ConstantInt::get(I32, 0)};
+    };
 
     // pthread primitive -> race-runtime wrapper. The wrappers still perform the
     // real operation; they just also record the ordering edge.
@@ -688,8 +708,9 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       if (TS.isScalable())
         return; // not produced by C/C++
       IRBuilder<> B(At);
+      auto [FileC, LineC] = getLoc(B, At);
       B.CreateCall(isWrite ? RaceWrite : RaceRead,
-                   {Ptr, ConstantInt::get(I64, TS.getFixedValue())});
+                   {Ptr, ConstantInt::get(I64, TS.getFixedValue()), FileC, LineC});
       ++accesses;
     };
 

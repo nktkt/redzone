@@ -195,6 +195,22 @@ but little else.
    currently ignored.
 4. **Performance** — tune shadow layout and the per-access path.
 
+**Reporting.** A detected race prints both sides — the current and the prior
+conflicting access, each with thread id and `file:line` (forwarded from debug
+info, like the address checker) — plus the address, e.g.
+
+```
+==redzone WARNING: data race
+  write by thread 2 at counter.c:14
+  previous read by thread 1 at counter.c:9
+  address 0x...
+```
+
+Reports are deduplicated by source position so a hot racy loop prints a handful
+of distinct races, not thousands; the exit summary counts them all and (unless
+`REDZONE_RACE_NO_EXIT` is set) exits nonzero. `REDZONE_RACE_VERBOSE` disables the
+dedup.
+
 ## Relationship to the rest of redzone
 
 Race detection reuses the **instrumentation pass** (the access walk and

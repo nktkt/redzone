@@ -81,8 +81,9 @@ static rz_bucket *find_bucket(rz_race_state *s, uintptr_t word, int create) {
   return NULL; // table full
 }
 
-int rz_race_access(rz_race_state *s, rz_thread *t, uintptr_t addr,
-                   int is_write) {
+int rz_race_access_loc(rz_race_state *s, rz_thread *t, uintptr_t addr,
+                       int is_write, const char *file, int line,
+                       rz_access *out_prev) {
   uintptr_t word = addr >> 3;
   rz_bucket *b = find_bucket(s, word, 1);
   if (!b)
@@ -91,11 +92,15 @@ int rz_race_access(rz_race_state *s, rz_thread *t, uintptr_t addr,
   rz_epoch_t cur_epoch =
       (t->tid >= 0 && t->tid < RZ_RACE_MAX_THREADS) ? t->clock.t[t->tid] : 0;
 
-  // Check the new access against every recorded cell for this location.
+  // Check the new access against every recorded cell for this location; capture
+  // the first conflicting one for the report.
   int raced = 0;
   for (int i = 0; i < RZ_RACE_CELLS; i++)
-    if (rz_race_check(&b->cells[i], t->tid, &t->clock, is_write))
+    if (rz_race_check(&b->cells[i], t->tid, &t->clock, is_write)) {
+      if (!raced && out_prev)
+        *out_prev = b->cells[i];
       raced = 1;
+    }
 
   // Record the access. Prefer overwriting a cell already owned by this thread
   // (keep only its latest epoch), then a free cell, then evict cell 0.
@@ -123,7 +128,13 @@ int rz_race_access(rz_race_state *s, rz_thread *t, uintptr_t addr,
   c->tid = t->tid;
   c->epoch = cur_epoch;
   c->is_write = is_write;
+  c->file = file;
+  c->line = line;
   return raced;
+}
+
+int rz_race_access(rz_race_state *s, rz_thread *t, uintptr_t addr, int is_write) {
+  return rz_race_access_loc(s, t, addr, is_write, NULL, 0, NULL);
 }
 
 void rz_sync_init(rz_sync *m) { rz_vc_init(&m->clock); }

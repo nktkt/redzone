@@ -33,7 +33,7 @@ static void *safe_worker(void *arg) {
   for (int i = 0; i < ITERS; i++) {
     pthread_mutex_lock(&safe_mtx);
     rz_rt_mutex_lock(&safe_mtx);
-    rz_rt_write(&safe_shared, sizeof safe_shared);
+    rz_rt_write(&safe_shared, sizeof safe_shared, __FILE__, __LINE__);
     safe_shared++;
     rz_rt_mutex_unlock(&safe_mtx);
     pthread_mutex_unlock(&safe_mtx);
@@ -46,7 +46,7 @@ static long handoff;
 
 static void *handoff_worker(void *arg) {
   (void)arg;
-  rz_rt_write(&handoff, sizeof handoff); // ordered after parent's pre-create write
+  rz_rt_write(&handoff, sizeof handoff, __FILE__, __LINE__); // after parent's write
   handoff = 2;
   return NULL;
 }
@@ -57,7 +57,7 @@ static long racy_shared;
 static void *racy_worker(void *arg) {
   (void)arg;
   for (int i = 0; i < ITERS; i++) {
-    rz_rt_write(&racy_shared, sizeof racy_shared);
+    rz_rt_write(&racy_shared, sizeof racy_shared, __FILE__, __LINE__);
     racy_shared++;
   }
   return NULL;
@@ -81,12 +81,12 @@ int main(void) {
   //    and the parent's post-join write are all totally ordered -> no race.
   {
     unsigned long before = rz_rt_race_count();
-    rz_rt_write(&handoff, sizeof handoff); // before create
+    rz_rt_write(&handoff, sizeof handoff, __FILE__, __LINE__); // before create
     handoff = 1;
     pthread_t c;
     rz_rt_pthread_create(&c, NULL, handoff_worker, NULL);
     rz_rt_pthread_join(c, NULL);
-    rz_rt_write(&handoff, sizeof handoff); // after join
+    rz_rt_write(&handoff, sizeof handoff, __FILE__, __LINE__); // after join
     handoff = 3;
     check("rt: create/join handoff -> no race",
           rz_rt_race_count() == before, 1);
