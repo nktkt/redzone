@@ -79,6 +79,10 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         "__redzone_calloc", PtrTy, I64, I64, PtrTy, I32);
     FunctionCallee RzRealloc = M.getOrInsertFunction(
         "__redzone_realloc", PtrTy, PtrTy, I64, PtrTy, I32);
+    FunctionCallee RzAlignedAlloc = M.getOrInsertFunction(
+        "__redzone_aligned_alloc", PtrTy, I64, I64, PtrTy, I32);
+    FunctionCallee RzPosixMemalign = M.getOrInsertFunction(
+        "__redzone_posix_memalign", I32, PtrTy, I64, I64, PtrTy, I32);
     FunctionCallee GlobalRegister =
         M.getOrInsertFunction("__redzone_global_register", VoidTy, PtrTy, I64);
     // Base of the direct-mapped shadow, defined by the runtime; loaded inline.
@@ -224,6 +228,9 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       // Collect first, mutate after, to avoid invalidating iterators.
       SmallVector<Instruction *, 16> accesses;
       SmallVector<CallInst *, 8> mallocCalls, callocCalls, reallocCalls, freeCalls;
+      SmallVector<CallInst *, 4> alignedAllocCalls, posixMemalignCalls;
+      // C++ new (size arg, like malloc) and delete (ptr arg, like free).
+      SmallVector<CallInst *, 4> newCalls, deleteCalls;
       SmallVector<AllocaInst *, 8> allocas;
       SmallVector<ReturnInst *, 4> returns;
 
@@ -242,6 +249,17 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
                 reallocCalls.push_back(CI);
               else if (N == "free")
                 freeCalls.push_back(CI);
+              else if (N == "aligned_alloc")
+                alignedAllocCalls.push_back(CI);
+              else if (N == "posix_memalign")
+                posixMemalignCalls.push_back(CI);
+              // Itanium-mangled global operator new / new[] (take a size_t).
+              else if (N == "_Znwm" || N == "_Znam")
+                newCalls.push_back(CI);
+              // operator delete / delete[], plain and sized (first arg = ptr).
+              else if (N == "_ZdlPv" || N == "_ZdaPv" || N == "_ZdlPvm" ||
+                       N == "_ZdaPvm")
+                deleteCalls.push_back(CI);
             }
           } else if (auto *AI = dyn_cast<AllocaInst>(&I)) {
             allocas.push_back(AI);
@@ -397,9 +415,56 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         CI->eraseFromParent();
         ++mallocs;
       }
+      // aligned_alloc(align, size) -> __redzone_aligned_alloc(align,size,file,line)
+      for (CallInst *CI : alignedAllocCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI = B.CreateCall(
+            RzAlignedAlloc,
+            {CI->getArgOperand(0), CI->getArgOperand(1), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+      // posix_memalign(memptr, align, size) ->
+      //   __redzone_posix_memalign(memptr, align, size, file, line)
+      for (CallInst *CI : posixMemalignCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI = B.CreateCall(
+            RzPosixMemalign, {CI->getArgOperand(0), CI->getArgOperand(1),
+                              CI->getArgOperand(2), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+      // C++ operator new / new[] (size arg) -> __redzone_malloc, so new'd blocks
+      // get red zones and are tracked just like malloc'd ones.
+      for (CallInst *CI : newCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI =
+            B.CreateCall(RzMalloc, {CI->getArgOperand(0), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+
       // 4. Redirect free: same signature, just swap the callee.
       for (CallInst *CI : freeCalls) {
         CI->setCalledFunction(RzFree);
+        ++frees;
+      }
+      // C++ operator delete / delete[] (plain or sized) -> __redzone_free. The
+      // sized forms carry an extra size arg, so rebuild the call with just the
+      // pointer rather than swapping the callee in place.
+      for (CallInst *CI : deleteCalls) {
+        IRBuilder<> B(CI);
+        B.CreateCall(RzFree, {CI->getArgOperand(0)});
+        CI->eraseFromParent();
         ++frees;
       }
     }

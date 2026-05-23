@@ -35,6 +35,11 @@ CASES=(
   "calloc_overflow.c:heap-buffer-overflow"
   "realloc_grow.c:OK"
   "global_overflow.c:global-buffer-overflow"
+  "aligned_valid.c:OK"
+  "aligned_overflow.c:heap-buffer-overflow"
+  "cpp_new_valid.cpp:OK"
+  "cpp_new_overflow.cpp:heap-buffer-overflow"
+  "cpp_delete_uaf.cpp:use-after-free"
 )
 
 # Build the pass plugin only if it isn't already present.
@@ -48,9 +53,16 @@ fi
 # with the runtime (which is built WITHOUT the pass to avoid recursion).
 # Intermediate artifacts all live under build/.
 instrument_and_build() {
-  local src="$1" out="$2" name
+  local src="$1" out="$2" name cflags
   name="$(basename "$out")"
-  clang -g -O0 -S -emit-llvm "$src" -o "build/${name}.ll" &&
+  cflags="-g -O0"
+  # C++ sources compile via the C++ frontend; -fno-exceptions/-rtti keeps the IR
+  # free of C++ ABI deps so the final link (with the C runtime) needs no libc++,
+  # since new/delete are redirected to the runtime.
+  case "$src" in
+    *.cpp) cflags="$cflags -fno-exceptions -fno-rtti" ;;
+  esac
+  clang $cflags -S -emit-llvm "$src" -o "build/${name}.ll" &&
     opt -load-pass-plugin="$PLUGIN" -passes=redzone -S "build/${name}.ll" \
         -o "build/${name}.instr.ll" &&
     clang -g "build/${name}.instr.ll" runtime/redzone_rt.c -o "$out"
@@ -65,7 +77,7 @@ for entry in "${CASES[@]}"; do
   total=$((total + 1))
 
   src="examples/${file}"
-  name="${file%.c}"
+  name="${file%.*}"
   bin="build/${name}"
   log="build/${name}.stderr"
 

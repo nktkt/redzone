@@ -24,6 +24,14 @@ void *__redzone_calloc(size_t nmemb, size_t size, const char *file, int line);
 void *__redzone_realloc(void *ptr, size_t size, const char *file, int line);
 void __redzone_free(void *ptr);
 
+// aligned_alloc / posix_memalign replacements: same red-zone guarding, but the
+// user region is aligned to `alignment`. C++ `new`/`delete` need no new entry
+// points -- the pass redirects them to __redzone_malloc/__redzone_free.
+void *__redzone_aligned_alloc(size_t alignment, size_t size, const char *file,
+                              int line);
+int __redzone_posix_memalign(void **memptr, size_t alignment, size_t size,
+                             const char *file, int line);
+
 // Validate a memory access of `size` bytes at `addr`. `is_write` is 1 for
 // stores, 0 for loads; `file`/`line` locate the access (may be NULL/0). Aborts
 // with a diagnostic if the access is illegal. Addresses that belong to no

@@ -48,8 +48,9 @@ Make it correct and fast enough to point at real code.
 - ✅ **Shadow memory model** — replace the O(n) metadata table with O(1) shadow
   lookups. *This is the central scalability unlock.* (Done in v0.4: lazy hashed
   shadow chunks; table kept for error-path reports only.)
-- ✅ **Allocator coverage** — `malloc`/`calloc`/`realloc`/`free` (v0.7).
-  `aligned_alloc` and C++ `new`/`delete` remain.
+- ✅ **Allocator coverage** — `malloc`/`calloc`/`realloc`/`free` (v0.7),
+  `aligned_alloc`/`posix_memalign` and C++ `new`/`new[]`/`delete`/`delete[]`
+  (v0.14). C++17 aligned `new`/`delete` remain.
 - ✅ **Stack buffer overflow** detection (v0.6): the pass wraps each static
   stack allocation with red zones, poisoned on entry and restored on return.
 - ✅ **Global buffer overflow** detection (v0.9): the pass wraps eligible
@@ -163,11 +164,10 @@ Run alongside every horizon, not in sequence.
   check** (v0.11), **O(1) allocator metadata** (v0.12), and **selective
   instrumentation** (v0.13) done — compute-bound overhead fell ~14x → ~1.1x and
   the allocator path ~800x → ~7.5x (`docs/benchmarks.md`), with a `bench.sh
-  --check` regression gate now in CI. Next: cross-block / loop-range check
-  elimination (the remaining `gather` overhead), incremental instrumentation, and
-  external globals / `aligned_alloc` / C++ `new`/`delete`.
-- **Also deferred:** external (non-static) globals, `aligned_alloc` / C++
-  `new`/`delete`, Bazel.
-- **Deferred Horizon 2:** global buffer overflows; `aligned_alloc`/`new`/`delete`;
-  benchmarks.
+  --check` regression gate now in CI. **v0.14** added `aligned_alloc`/
+  `posix_memalign` and C++ `new`/`delete` coverage. Next: cross-block / loop-range
+  check elimination (the remaining `gather` overhead) and incremental
+  instrumentation.
+- **Also deferred:** external (non-static) globals, C++17 aligned `new`/`delete`,
+  Bazel.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.

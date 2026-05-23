@@ -31,6 +31,7 @@
 
 #include "redzone_rt.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -365,12 +366,28 @@ static void report_free_error(const char *kind, const void *ptr) {
 // Allocation / deallocation
 //===----------------------------------------------------------------------===//
 
-void *__redzone_malloc(size_t size, const char *file, int line) {
-  size_t total = size + 2 * REDZONE_SIZE;
+static int is_pow2(size_t x) { return x != 0 && (x & (x - 1)) == 0; }
+
+// The common allocator: returns `size` user bytes whose start is `align`-aligned
+// (align must be a power of two, >= REDZONE_SIZE), guarded by red zones on both
+// sides, recorded in the table, poisoned in the shadow, with the O(1) lookup
+// header stashed just below the user region. malloc and the aligned allocators
+// all funnel through here; only `align` and the slack reserved for it differ.
+static void *rz_allocate(size_t size, size_t align, const char *file, int line) {
+  // Reserve the user bytes, both red zones, and (for over-aligned requests)
+  // enough slack to round the user pointer up to `align`.
+  size_t slack = align > REDZONE_SIZE ? align : 0;
+  if (size > SIZE_MAX - 2 * REDZONE_SIZE - slack)
+    return NULL; // size computation would overflow
+  size_t total = size + 2 * REDZONE_SIZE + slack;
   unsigned char *base = (unsigned char *)malloc(total);
   if (!base)
     return NULL;
-  uintptr_t user = (uintptr_t)base + REDZONE_SIZE;
+
+  // First `align`-aligned address that leaves room for a left red zone. With the
+  // platform's 16-aligned malloc and align == REDZONE_SIZE this is base+16, i.e.
+  // identical to the plain malloc layout.
+  uintptr_t user = ((uintptr_t)base + REDZONE_SIZE + (align - 1)) & ~(align - 1);
   size_t idx = record_block((uintptr_t)base, total, user, size, file, line);
 
   // Poison the whole block, then carve out the addressable user region.
@@ -389,6 +406,40 @@ void *__redzone_malloc(size_t size, const char *file, int line) {
   h->index = idx;
 
   return (void *)user;
+}
+
+void *__redzone_malloc(size_t size, const char *file, int line) {
+  return rz_allocate(size, REDZONE_SIZE, file, line);
+}
+
+// aligned_alloc(alignment, size): like malloc but the user pointer is aligned to
+// `alignment`. We honor any alignment >= REDZONE_SIZE; smaller (but valid) ones
+// are rounded up to REDZONE_SIZE, which still satisfies the request and leaves
+// room for the red-zone header.
+void *__redzone_aligned_alloc(size_t alignment, size_t size, const char *file,
+                              int line) {
+  if (!is_pow2(alignment))
+    return NULL; // C requires a power-of-two alignment
+  if (alignment < REDZONE_SIZE)
+    alignment = REDZONE_SIZE;
+  return rz_allocate(size, alignment, file, line);
+}
+
+// posix_memalign(memptr, alignment, size): stores an `alignment`-aligned region
+// in *memptr and returns 0, or an errno value on failure (without touching
+// *memptr). alignment must be a power of two and a multiple of sizeof(void*).
+int __redzone_posix_memalign(void **memptr, size_t alignment, size_t size,
+                             const char *file, int line) {
+  if (!memptr)
+    return EINVAL;
+  if (!is_pow2(alignment) || alignment % sizeof(void *) != 0)
+    return EINVAL;
+  size_t a = alignment < REDZONE_SIZE ? REDZONE_SIZE : alignment;
+  void *p = rz_allocate(size, a, file, line);
+  if (!p)
+    return ENOMEM;
+  *memptr = p;
+  return 0;
 }
 
 void *__redzone_calloc(size_t nmemb, size_t size, const char *file, int line) {
