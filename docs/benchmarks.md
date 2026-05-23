@@ -74,25 +74,25 @@ Measured on this machine:
 - **Compiler:** Homebrew clang 22.1.4 (LLVM 22)
 - **Command:** `./scripts/bench.sh` (min of K runs, `-O2` both)
 
-Current (v0.12 — O(1) allocator metadata lookup):
+Current (v0.13 — selective instrumentation: skip provably-safe accesses):
 
 | benchmark    | baseline (ms) | instrumented (ms) | slowdown | correct |
 |--------------|--------------:|------------------:|---------:|:-------:|
-| compute      |         143.9 |             220.7 |     1.6x |   OK    |
-| gather       |          22.6 |             397.4 |    17.7x |   OK    |
-| alloc_churn  |           2.9 |              27.1 |     9.4x |   OK    |
+| compute      |         143.7 |             157.5 |     1.1x |   OK    |
+| gather       |          22.5 |             214.3 |     9.5x |   OK    |
+| alloc_churn  |           2.8 |              20.9 |     7.5x |   OK    |
 
 These are best-case wall times; ratios wobble run-to-run (most for `alloc_churn`,
 whose baseline is only a few ms — a warm allocator churns tiny blocks almost for
-free — so its absolute instrumented cost, ~27 ms, is the stabler signal).
+free — so its absolute instrumented cost, ~21 ms, is the stabler signal).
 
 ### How we got here
 
-| benchmark | hashed (v0.9) | direct-mapped (v0.10) | inlined (v0.11) | O(1) free (v0.12) |
-|---|--:|--:|--:|--:|
-| compute | 13.9x | ~11x | 1.8x | **1.6x** |
-| gather | 143x | ~123x | 34.5x | **17.7x** |
-| alloc_churn | ~916x | ~780x | 805x | **9.4x** |
+| benchmark | hashed (v0.9) | direct-mapped (v0.10) | inlined (v0.11) | O(1) free (v0.12) | selective (v0.13) |
+|---|--:|--:|--:|--:|--:|
+| compute | 13.9x | ~11x | 1.8x | 1.6x | **1.1x** |
+| gather | 143x | ~123x | 34.5x | 17.7x | **9.5x** |
+| alloc_churn | ~916x | ~780x | 805x | 9.4x | **7.5x** |
 
 - **v0.10** replaced the hashed shadow with a direct-mapped one
   (`base + (addr>>3)`): a modest win, confirming the per-access *function call*,
@@ -111,31 +111,46 @@ free — so its absolute instrumented cost, ~27 ms, is the stabler signal).
   wall time 2254 ms → 27 ms); `gather`, which also frees once per outer
   iteration, roughly halved (34.5x → 17.7x) as its free path stopped scanning —
   leaving it a near-pure measure of per-access overhead.
+- **v0.13** added **selective instrumentation** (see
+  [`docs/design/selective-instrumentation.md`](design/selective-instrumentation.md)):
+  the pass now skips checks it can prove are safe — accesses provably in-bounds of
+  a static `alloca`, and redundant rechecks of a pointer already checked earlier
+  in the same basic block. Across the corpus this drops 80–90% of checks (e.g.
+  `compute` 62→5, `gather`/`alloc_churn` 47→5) with no loss of detection. The big
+  runtime win is indirect: an unchecked scalar local is no longer pinned in memory
+  by a check on its address, so `mem2reg` promotes it to a register. `compute`
+  fell to **~1.1x** (essentially free) and `gather` halved again (17.7x → **9.5x**)
+  as its loop induction/accumulator variables promoted; only its two genuine
+  data-dependent heap loads per iteration remain checked.
 
 ## Interpretation
 
 The spread across benchmarks is the headline: overhead tracks **memory-access
 and allocation density**, not raw CPU work.
 
-- **`compute` (~1.6x)** is compute-bound: register-only hashing with one
-  instrumented access per outer iteration. With the check inlined there is almost
-  nothing to pay, so it sits in AddressSanitizer's ~2-3x range.
-- **`gather` (~18x)** is the worst case: a tight dependent-gather loop where an
+- **`compute` (~1.1x)** is compute-bound: register-only hashing with one
+  instrumented access per outer iteration. Selective instrumentation (v0.13) skips
+  the checks on its scalar locals, so they promote to registers and the only cost
+  left is the single real array touch — barely measurable.
+- **`gather` (~9.5x)** is the worst case: a tight dependent-gather loop where an
   inlined shadow load precedes essentially every (latency-bound) data load, so
-  the extra loads serialize. Real code is rarely this pointer-chasing-heavy. Now
-  that free is O(1), this is close to a pure per-access measurement.
-- **`alloc_churn` (~9x)** hammers the allocator: each `malloc`/`free` goes
+  the extra loads serialize. Real code is rarely this pointer-chasing-heavy. After
+  v0.13 only the two genuine data-dependent heap loads per iteration are checked,
+  which is close to the irreducible per-access floor for this access pattern.
+- **`alloc_churn` (~7.5x)** hammers the allocator: each `malloc`/`free` goes
   through the runtime's red-zone setup/teardown and shadow poisoning. With the
-  metadata lookup now O(1) (v0.12) this is bounded per-operation work rather than
-  the former O(N²) blow-up; the residual is the fixed cost of red-zone
-  bookkeeping over a warm allocator's few-nanosecond fast path.
+  metadata lookup O(1) (v0.12) this is bounded per-operation work rather than the
+  former O(N²) blow-up; the residual is the fixed cost of red-zone bookkeeping
+  over a warm allocator's few-nanosecond fast path.
 
-The remaining per-access cost is now just the inlined shadow load + compare; the
-out-of-line call to `__redzone_check` is taken only when a byte is flagged (and
-re-validated there before reporting). The allocator path is O(1) per call.
+The remaining per-access cost is now just the inlined shadow load + compare on the
+accesses we cannot prove safe; the out-of-line call to `__redzone_check` is taken
+only when a byte is flagged (and re-validated there before reporting). The
+allocator path is O(1) per call.
 
-The Horizon 4 shadow/check steps (direct-mapped shadow in v0.10, inlined check
-in v0.11) brought compute-bound code to ~2x — ASan territory — and v0.12's O(1)
-allocator metadata removed the allocator-path blow-up. The remaining headroom is
-in the load-heavy `gather` case, which points at the next optional work:
-**skipping provably-safe accesses** to thin out redundant checks.
+Across v0.10–v0.13 the four Horizon 4 levers — direct-mapped shadow, inlined
+check, O(1) allocator metadata, and selective instrumentation — brought
+compute-bound code to ~1.1x and roughly halved the load- and allocation-bound
+cases twice over. The remaining `gather` overhead is the cost of checking
+genuinely unprovable pointer-chasing loads; thinning it further would require
+range/loop analysis to hoist or coalesce checks (a possible future step).

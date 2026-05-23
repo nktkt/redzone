@@ -86,8 +86,10 @@ Turn a compiler pass into a product people choose to use.
 
 Run on huge codebases and many builds without pain.
 
-- **Selective instrumentation** — skip provably-safe accesses via static
-  analysis; per-file/per-function opt-out attributes.
+- ✅ **Selective instrumentation** — skip provably-safe accesses via static
+  analysis (v0.13: in-bounds-of-alloca + redundant rechecks; ~80–90% fewer
+  checks, `docs/design/selective-instrumentation.md`). Cross-block/loop-range
+  skipping and per-file/per-function opt-out attributes remain.
 - **Incremental builds** — only re-instrument changed translation units;
   compatibility with `ccache`/`sccache` and distributed builds.
 - **Parallel / distributed test execution.**
@@ -157,10 +159,11 @@ Run alongside every horizon, not in sequence.
 - **Horizon 3 done:** CLI wrapper; CI (suite + format + integration checks);
   machine-readable output with a SARIF→code-scanning guide; CMake & Make recipes.
 - **Now (Horizon 4):** **direct-mapped shadow** (v0.10), **inlined fast-path
-  check** (v0.11), and **O(1) allocator metadata** (v0.12) done — compute-bound
-  overhead fell ~14x → ~1.6x and the allocator path ~800x → ~9x
-  (`docs/benchmarks.md`). Next: selective/incremental instrumentation (thin out
-  per-access checks in load-heavy code, the remaining `gather` overhead).
+  check** (v0.11), **O(1) allocator metadata** (v0.12), and **selective
+  instrumentation** (v0.13) done — compute-bound overhead fell ~14x → ~1.1x and
+  the allocator path ~800x → ~7.5x (`docs/benchmarks.md`). Next: cross-block /
+  loop-range check elimination (the remaining `gather` overhead), incremental
+  instrumentation, and external globals / `aligned_alloc` / C++ `new`/`delete`.
 - **Also deferred:** external (non-static) globals, `aligned_alloc` / C++
   `new`/`delete`, Bazel.
 - **Deferred Horizon 2:** global buffer overflows; `aligned_alloc`/`new`/`delete`;

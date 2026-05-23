@@ -22,6 +22,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/IR/Constants.h"
@@ -100,7 +102,53 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       return {ConstantPointerNull::get(PtrTy), ConstantInt::get(I32, 0)};
     };
 
+    // The (pointer, byte-size) accessed by a load/store, or nullopt if the size
+    // isn't a fixed value (e.g. a scalable vector -- not produced by C/C++).
+    auto accessInfo =
+        [&](Instruction *I) -> std::optional<std::pair<Value *, uint64_t>> {
+      Type *Ty;
+      Value *Ptr;
+      if (auto *LI = dyn_cast<LoadInst>(I)) {
+        Ptr = LI->getPointerOperand();
+        Ty = LI->getType();
+      } else if (auto *SI = dyn_cast<StoreInst>(I)) {
+        Ptr = SI->getPointerOperand();
+        Ty = SI->getValueOperand()->getType();
+      } else {
+        return std::nullopt;
+      }
+      TypeSize TS = DL.getTypeStoreSize(Ty);
+      if (TS.isScalable())
+        return std::nullopt;
+      return std::make_pair(Ptr, TS.getFixedValue());
+    };
+
+    // Selective instrumentation, step 1: is this access provably in-bounds of a
+    // *static alloca*? Such an access can never reach a red zone, so checking it
+    // is pure overhead -- and dropping the check lets later mem2reg promote the
+    // alloca to a register. Restricting this to allocas (not heap or globals)
+    // keeps it away from the red zones where bugs actually live, and it MUST be
+    // evaluated on the original pointer, before we wrap allocas (afterwards the
+    // pointer is offset into a larger, red-zone-padded alloca and an out-of-
+    // bounds access would look in-bounds). Mirrors ASan's isSafeAccess.
+    auto provablySafeAlloca = [&](Value *Ptr, uint64_t Size) -> bool {
+      APInt Off(DL.getIndexTypeSizeInBits(Ptr->getType()), 0);
+      Value *Base =
+          Ptr->stripAndAccumulateConstantOffsets(DL, Off, /*AllowNonInbounds=*/true);
+      auto *AI = dyn_cast<AllocaInst>(Base);
+      if (!AI || !AI->isStaticAlloca())
+        return false;
+      std::optional<TypeSize> SzOpt = AI->getAllocationSize(DL);
+      if (!SzOpt || SzOpt->isScalable() || Off.isNegative())
+        return false;
+      uint64_t ObjSize = SzOpt->getFixedValue();
+      uint64_t Offset = Off.getZExtValue();
+      // [Offset, Offset+Size) must lie within [0, ObjSize).
+      return Offset <= ObjSize && ObjSize - Offset >= Size;
+    };
+
     unsigned checks = 0, mallocs = 0, frees = 0, stackVars = 0, globals = 0;
+    unsigned skippedSafe = 0, skippedRedundant = 0;
 
     // Wrap eligible globals (defined, internal-linkage, non-const) with red
     // zones, and install a constructor that poisons them at startup. Internal
@@ -203,6 +251,43 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         }
       }
 
+      // Selective instrumentation: decide which accesses to skip BEFORE any
+      // alloca wrapping (which would move pointers into red-zone-padded allocas
+      // and defeat the in-bounds analysis). Two sound, false-negative-free rules:
+      //   (a) provably in-bounds of a static alloca (can't reach a red zone);
+      //   (b) redundant -- the same pointer was already checked, with a >= size,
+      //       earlier in this basic block with no intervening call. Nothing but
+      //       a call (which may free/realloc/poison) can change the shadow for an
+      //       already-validated address, so the later access is still safe.
+      SmallPtrSet<Instruction *, 16> skip;
+      for (Instruction *I : accesses)
+        if (auto AI = accessInfo(I))
+          if (provablySafeAlloca(AI->first, AI->second)) {
+            skip.insert(I);
+            ++skippedSafe;
+          }
+      for (BasicBlock &BB : F) {
+        DenseMap<Value *, uint64_t> checked; // pointer -> max size already checked
+        for (Instruction &I : BB) {
+          if (isa<CallBase>(I)) {
+            checked.clear(); // a call may change the shadow; forget everything
+            continue;
+          }
+          if (skip.count(&I))
+            continue; // provably safe: emits no check to rely on
+          auto AI = accessInfo(&I);
+          if (!AI)
+            continue;
+          uint64_t &maxChecked = checked[AI->first];
+          if (maxChecked >= AI->second && maxChecked != 0) {
+            skip.insert(&I);
+            ++skippedRedundant;
+          } else if (AI->second > maxChecked) {
+            maxChecked = AI->second;
+          }
+        }
+      }
+
       // 1. Wrap static stack allocations with red zones.
       for (AllocaInst *AI : allocas) {
         if (!AI->isStaticAlloca())
@@ -230,8 +315,10 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         ++stackVars;
       }
 
-      // 2. Insert a check before each load/store.
+      // 2. Insert a check before each load/store the analysis didn't skip.
       for (Instruction *I : accesses) {
+        if (skip.count(I))
+          continue;
         Value *Ptr;
         Type *AccessTy;
         bool IsWrite;
@@ -317,9 +404,10 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       }
     }
 
-    errs() << "[redzone] instrumented " << checks << " access(es); " << stackVars
-           << " stack var(s); " << globals << " global(s); redirected " << mallocs
-           << " alloc / " << frees << " free call(s)\n";
+    errs() << "[redzone] instrumented " << checks << " access(es) (skipped "
+           << skippedSafe << " safe + " << skippedRedundant << " redundant); "
+           << stackVars << " stack var(s); " << globals << " global(s); redirected "
+           << mallocs << " alloc / " << frees << " free call(s)\n";
 
     bool Changed = checks || mallocs || frees || stackVars || globals;
     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();

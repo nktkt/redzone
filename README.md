@@ -156,15 +156,18 @@ and **global-buffer-overflow**, **use-after-free**, **double-free**,
 **invalid-free** and **memory leaks** across `malloc`/`calloc`/`realloc`/`free`,
 reporting the faulting `file:line` (plus the allocation site for heap bugs). The
 per-access check uses **shadow memory** (O(1)). It ships a `redzone` CLI,
-text/JSON/SARIF output, CMake & Make integration, and a 15-case suite plus
+text/JSON/SARIF output, CMake & Make integration, and a 16-case suite plus
 format and integration checks in CI. Remaining gaps: external (non-static)
 globals, `aligned_alloc` / C++ `new`/`delete`, and threading.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
-so compute-bound code runs at ~1.6×, and the allocator path is **O(1)** per
-`malloc`/`free` (each block finds its metadata via a header in its own red zone,
-no scanning), so allocation-heavy code dropped from ~800× to ~9× (see
-**[docs/benchmarks.md](docs/benchmarks.md)**).
+the allocator path is **O(1)** per `malloc`/`free` (each block finds its metadata
+via a header in its own red zone, no scanning), and the pass uses **selective
+instrumentation** — it skips checks it can prove are safe (accesses in-bounds of a
+local, redundant rechecks), which both removes the check and lets the optimizer
+keep those locals in registers. Compute-bound code now runs at ~1.1× and
+allocation-heavy code at ~7.5× (down from ~800×); see
+**[docs/benchmarks.md](docs/benchmarks.md)**.
 
 ## License
 
