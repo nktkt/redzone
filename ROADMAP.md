@@ -134,12 +134,13 @@ From a tool to a platform.
   runtime (`runtime/redzone_race_rt.{c,h}` — TLS clocks, create/join wrappers,
   mutex acquire/release), and a **pass mode** (`-redzone-race`) that auto-emits
   the access hooks and redirects the pthread primitives — `create`/`join`,
-  `mutex_lock`/`unlock`/`trylock`, and reader/writer locks. A racy program is
-  flagged and correctly-synchronized ones (mutex, rwlock, trylock) run clean
-  (`scripts/test_race_e2e.sh`); the runtime alone is also stress-tested with real
-  pthreads, 25× in CI. Remaining breadth — condition variables, barriers,
-  semaphores, `pthread_once`, C/C++ atomics with memory orders, and performance
-  tuning — is still ahead; it stays a distinct opt-in mode.
+  `mutex_lock`/`unlock`/`trylock`, reader/writer locks, and condition variables.
+  A racy program is flagged and correctly-synchronized ones (mutex, rwlock,
+  trylock, condvar producer/consumer) run clean (`scripts/test_race_e2e.sh`); the
+  runtime alone is also stress-tested with real pthreads, 25× in CI. Remaining
+  breadth — barriers, semaphores, `pthread_once`, C/C++ atomics with memory
+  orders, and performance tuning — is still ahead; it stays a distinct opt-in
+  mode.
 - **Findings dashboard** — aggregate results across builds, track regressions
   and trends over time, triage workflow. *(The org-scale / SaaS angle.)*
 - **Fuzzing integration** — coverage-guided fuzzing with redzone as the crash

@@ -26,6 +26,7 @@ CASES=(
   "race_rwlock_clean.c:clean"   # rwlock: readers + a writer, all locked
   "race_rwlock_unlocked.c:race" # locked writer + a rogue unlocked writer
   "race_trylock_clean.c:clean"  # mutual exclusion via mutex trylock
+  "race_condvar_clean.c:clean"  # producer/consumer via cond_wait + timedwait
 )
 
 if [[ ! -f "$PLUGIN" ]]; then

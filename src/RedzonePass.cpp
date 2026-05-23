@@ -661,6 +661,8 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         {"pthread_rwlock_tryrdlock", "rz_rt_pthread_rwlock_tryrdlock"},
         {"pthread_rwlock_trywrlock", "rz_rt_pthread_rwlock_trywrlock"},
         {"pthread_rwlock_unlock", "rz_rt_pthread_rwlock_unlock"},
+        {"pthread_cond_wait", "rz_rt_pthread_cond_wait"},
+        {"pthread_cond_timedwait", "rz_rt_pthread_cond_timedwait"},
     };
     auto syncTarget = [&](StringRef N) -> const char * {
       // macOS headers give some pthread entry points an assembler label such as
