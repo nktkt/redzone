@@ -7,14 +7,18 @@ correctness-critical happens-before *engine* (vector clocks + the race decision)
 per-location shadow, and mutex/create/join synchronization events — are
 implemented and unit-tested in isolation (`runtime/redzone_race.{c,h}`, exercised
 by `scripts/test_race_engine.sh` in CI). A **runtime layer**
-(`runtime/redzone_race_rt.{c,h}`) now drives that state machine from *real*
-pthreads — per-thread clocks in TLS, `pthread_create`/`join` wrappers, and
-mutex acquire/release — validated with actual threads
-(`scripts/test_race_runtime.sh`, run repeatedly in CI). What is still **not
-wired up**: emitting the access and synchronization hooks *automatically* from
-the pass (or a dyld interposer), so today a caller must invoke the wrappers
-explicitly. A normal redzone build is unaffected; the detector is a large,
-separate sub-project still mostly ahead.
+(`runtime/redzone_race_rt.{c,h}`) drives that state machine from *real* pthreads
+— per-thread clocks in TLS, `pthread_create`/`join` wrappers, and mutex
+acquire/release — validated with actual threads (`scripts/test_race_runtime.sh`).
+And the **pass now emits the hooks automatically** in race mode
+(`-redzone-race`): before every load/store it inserts a race-access call and it
+redirects the pthread synchronization primitives to the runtime wrappers, so an
+ordinary program is instrumented end to end with no manual calls
+(`scripts/test_race_e2e.sh` flags a racy program and clears a mutex-protected
+one). A normal (address-mode) redzone build is completely unaffected. What
+remains is breadth: more synchronization primitives, C/C++ atomics with memory
+orders, and performance — the detector is still an opt-in, deliberately
+incomplete mode.
 
 ## Goal
 
@@ -150,19 +154,22 @@ but little else.
    with zero concurrency (`tests/race_engine_test.c`, scenarios A–I). Eviction and
    a full shadow table can only drop old accesses → missed races, never false
    reports.
-1b. **Core happens-before MVP** (in progress) — drive that same state machine
-   from real execution. **Done so far** (`runtime/redzone_race_rt.{c,h}`,
-   `scripts/test_race_runtime.sh`): a process-global detector serialized by one
-   lock, per-thread clocks in TLS, `pthread_create`/`join` wrappers that build the
-   parent↔child edges, mutex acquire/release keyed by lock address, and the shadow
-   attached to live addresses — validated with **real pthreads** (a
-   mutex-protected program reports zero races, a create/join handoff zero, an
-   unsynchronized program ≥1; run 25× in CI since the assertions are
-   timing-independent). **Still pending:** emitting the access/sync hooks
-   automatically from the pass (or a dyld interposer) so it works without manual
-   wrapper calls. Once that lands this detects write-write and read-write races on
-   real builds. (Deliberately incomplete: other primitives aren't modeled yet, so
-   it runs opt-in and its misses are known.)
+1b. **Core happens-before MVP** ✅ — the state machine now runs end to end on a
+   real build. The runtime (`runtime/redzone_race_rt.{c,h}`,
+   `runtime/redzone_race_main.c`) is a process-global detector serialized by one
+   lock: per-thread clocks in TLS, `pthread_create`/`join` wrappers that build the
+   parent↔child edges, mutex acquire/release keyed by lock address, and a shadow
+   attached to live addresses. The pass (`-redzone-race`) emits the access hooks
+   before every load/store and redirects the pthread primitives to those
+   wrappers, so an ordinary program is instrumented automatically. Validated two
+   ways: the runtime alone with **real pthreads**
+   (`scripts/test_race_runtime.sh`, 25× — mutex-protected → 0, create/join handoff
+   → 0, unsynchronized → ≥1) and **end to end** through the pass
+   (`scripts/test_race_e2e.sh` — a racy program is flagged, a mutex-protected one
+   runs clean, both run repeatedly since happens-before is timing-independent). It
+   detects write-write and read-write races. (Deliberately incomplete: only
+   `pthread_mutex_*` + create/join are modeled, so it runs opt-in and its misses
+   are known.)
 2. **More cells + more primitives** — multiple shadow cells; rwlocks, condvars,
    barriers, semaphores, `pthread_once`.
 3. **Atomics with memory orders.**

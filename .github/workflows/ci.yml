@@ -70,6 +70,12 @@ jobs:
         # timing-independent, so every run must pass (a flaky run fails CI).
         run: ./scripts/test_race_runtime.sh
 
+      - name: Race-mode end-to-end test
+        # Full path: the pass auto-emits the access/sync hooks (-redzone-race),
+        # linked against the race runtime. A racy program must be flagged, a
+        # mutex-protected one must run clean (no false positive). Run repeatedly.
+        run: ./scripts/test_race_e2e.sh
+
       - name: Reproducible-build (determinism) check
         # Instrumenting the same source twice must yield byte-identical objects --
         # the prerequisite for compiler caches and reproducible builds.

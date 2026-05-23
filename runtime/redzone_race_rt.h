@@ -46,10 +46,17 @@ int rz_rt_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                          void *(*start_routine)(void *), void *arg);
 int rz_rt_pthread_join(pthread_t thread, void **retval);
 
-// Synchronization events, keyed by the lock object's address. Call rz_rt_mutex_*
-// alongside the real pthread_mutex_* (or from an interposer).
+// Synchronization events, keyed by the lock object's address. These are the
+// lower-level record-only primitives; call them alongside your own real locking
+// (this is what the deterministic unit test does).
 void rz_rt_mutex_lock(void *mutex);   // acquire: import the lock's clock
 void rz_rt_mutex_unlock(void *mutex); // release: publish this thread's clock
+
+// pthread_mutex wrappers the pass redirects to: they perform the REAL lock /
+// unlock and also record the happens-before event. Same signatures as
+// pthread_mutex_lock/unlock so the redirect is a drop-in replacement.
+int rz_rt_pthread_mutex_lock(pthread_mutex_t *mutex);
+int rz_rt_pthread_mutex_unlock(pthread_mutex_t *mutex);
 
 // Memory access events emitted (eventually) by the instrumentation pass. `size`
 // may span several 8-byte words; each is checked.

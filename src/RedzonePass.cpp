@@ -40,6 +40,7 @@
 #else
 #include "llvm/Passes/PassPlugin.h" // LLVM <= 21
 #endif
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
@@ -55,6 +56,17 @@
 using namespace llvm;
 
 namespace {
+
+// Switch the pass into the data-race detector (a distinct, heavier mode; see
+// docs/design/data-race-detection.md). Instead of memory-safety checks it emits
+// happens-before access hooks and redirects the synchronization primitives.
+// Enable with `opt -passes=redzone -redzone-race` or `clang -fpass-plugin=...
+// -mllvm -redzone-race`.
+static cl::opt<bool>
+    ClRaceMode("redzone-race",
+               cl::desc("redzone: instrument for data-race detection instead of "
+                        "memory-safety checks"),
+               cl::init(false));
 
 // Load `fun:<glob>` / `src:<glob>` rules from the file named by the
 // REDZONE_IGNORELIST environment variable, if set. Blank lines and `#` comments
@@ -95,6 +107,9 @@ static constexpr uint64_t kRedzone = 16; // guard bytes on each side (matches rt
 
 struct RedzonePass : PassInfoMixin<RedzonePass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+    if (ClRaceMode)
+      return runRaceMode(M);
+
     LLVMContext &Ctx = M.getContext();
     const DataLayout &DL = M.getDataLayout();
 
@@ -602,6 +617,124 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
            << " opted-out fn(s)\n";
 
     bool Changed = checks || mallocs || frees || stackVars || globals;
+    return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  }
+
+  //===--------------------------------------------------------------------===//
+  // Data-race detection mode (see docs/design/data-race-detection.md).
+  //
+  // A separate, heavier instrumentation: before every load/store emit a call to
+  // the race runtime (rz_rt_read / rz_rt_write), and redirect the pthread
+  // synchronization primitives to wrappers that record happens-before edges. It
+  // shares nothing with the address checker -- no shadow check, no red zones, no
+  // allocator redirection -- and links a different runtime
+  // (runtime/redzone_race*.c). This runs best on already-optimized IR so that
+  // promotable locals are in registers and only genuine memory accesses remain;
+  // instrumenting a thread-local stack slot is merely overhead (it can't race),
+  // never a correctness problem.
+  //===--------------------------------------------------------------------===//
+  PreservedAnalyses runRaceMode(Module &M) {
+    LLVMContext &Ctx = M.getContext();
+    const DataLayout &DL = M.getDataLayout();
+    Type *VoidTy = Type::getVoidTy(Ctx);
+    PointerType *PtrTy = PointerType::getUnqual(Ctx);
+    IntegerType *I64 = Type::getInt64Ty(Ctx);
+
+    FunctionCallee RaceRead =
+        M.getOrInsertFunction("rz_rt_read", VoidTy, PtrTy, I64);
+    FunctionCallee RaceWrite =
+        M.getOrInsertFunction("rz_rt_write", VoidTy, PtrTy, I64);
+
+    // pthread primitive -> race-runtime wrapper. The wrappers still perform the
+    // real operation; they just also record the ordering edge.
+    struct Redir {
+      const char *from, *to;
+    };
+    static const Redir kSync[] = {
+        {"pthread_create", "rz_rt_pthread_create"},
+        {"pthread_join", "rz_rt_pthread_join"},
+        {"pthread_mutex_lock", "rz_rt_pthread_mutex_lock"},
+        {"pthread_mutex_unlock", "rz_rt_pthread_mutex_unlock"},
+    };
+    auto syncTarget = [&](StringRef N) -> const char * {
+      // macOS headers give some pthread entry points an assembler label such as
+      // "\01_pthread_join"; normalize that to the plain name before matching, or
+      // the redirect silently misses (a missing join/lock edge -> false report).
+      if (N.consume_front("\x01"))
+        N.consume_front("_");
+      for (const Redir &R : kSync)
+        if (N == R.from)
+          return R.to;
+      return nullptr;
+    };
+
+    unsigned accesses = 0, syncs = 0;
+    for (Function &F : M) {
+      if (F.isDeclaration())
+        continue;
+      StringRef FN = F.getName();
+      // Never instrument the detector's own runtime (rz_*) or the address
+      // runtime (__redzone*) should they ever share a module.
+      if (FN.starts_with("__redzone") || FN.starts_with("rz_"))
+        continue;
+
+      SmallVector<Instruction *, 32> mem;
+      SmallVector<CallInst *, 8> syncCalls;
+      for (BasicBlock &BB : F)
+        for (Instruction &I : BB) {
+          if (isa<LoadInst>(I) || isa<StoreInst>(I))
+            mem.push_back(&I);
+          else if (auto *CI = dyn_cast<CallInst>(&I))
+            if (Function *Cee = CI->getCalledFunction())
+              if (syncTarget(Cee->getName()))
+                syncCalls.push_back(CI);
+        }
+
+      // Redirect synchronization in EVERY function, even one that opts out of
+      // access checks: a missing happens-before edge would produce a FALSE
+      // POSITIVE, the one outcome the detector must never have.
+      for (CallInst *CI : syncCalls) {
+        Function *Cee = CI->getCalledFunction();
+        const char *to = syncTarget(Cee->getName());
+        // Reuse the original signature so the redirect is correct on any
+        // platform (pthread_t is a pointer on macOS, an integer on Linux).
+        FunctionCallee W = M.getOrInsertFunction(to, Cee->getFunctionType());
+        CI->setCalledFunction(W);
+        ++syncs;
+      }
+
+      // A function may opt out of ACCESS instrumentation (its sync edges are
+      // still tracked above) via disable_sanitizer_instrumentation.
+      if (F.hasFnAttribute(Attribute::DisableSanitizerInstrumentation))
+        continue;
+
+      for (Instruction *I : mem) {
+        Value *Ptr;
+        Type *Ty;
+        bool isWrite;
+        if (auto *LI = dyn_cast<LoadInst>(I)) {
+          Ptr = LI->getPointerOperand();
+          Ty = LI->getType();
+          isWrite = false;
+        } else {
+          auto *SI = cast<StoreInst>(I);
+          Ptr = SI->getPointerOperand();
+          Ty = SI->getValueOperand()->getType();
+          isWrite = true;
+        }
+        TypeSize TS = DL.getTypeStoreSize(Ty);
+        if (TS.isScalable())
+          continue; // not produced by C/C++
+        IRBuilder<> B(I);
+        B.CreateCall(isWrite ? RaceWrite : RaceRead,
+                     {Ptr, ConstantInt::get(I64, TS.getFixedValue())});
+        ++accesses;
+      }
+    }
+
+    errs() << "[redzone-race] instrumented " << accesses
+           << " access(es); redirected " << syncs << " sync call(s)\n";
+    bool Changed = accesses || syncs;
     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
   }
 
