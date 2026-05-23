@@ -71,9 +71,11 @@ Turn a compiler pass into a product people choose to use.
 
 - ✅ **CLI / compiler wrapper** (`scripts/redzone`) — `build`/`run` subcommands
   that automate emit-IR → instrument → link, and build the plugin on first use.
-- 🟡 **Great reports** — symbolized **stack traces** on every error in text and
+- ✅ **Great reports** — symbolized **stack traces** on every error in text and
   JSON (v0.16); **colorized** TTY-aware output and **deduplicated** leak summaries
-  (v0.18). `file:line` in trace frames (in-process symbolization) remains.
+  (v0.18); opt-in `file:line` in trace frames via `REDZONE_SYMBOLIZE` (v0.19,
+  best-effort atos/llvm-symbolizer). Deduping repeated *errors* would need a
+  continue-after-error mode (we abort on first).
 - 🟡 **Suppression files** — `REDZONE_SUPPRESSIONS` silences known **leaks** by
   allocation file (v0.16). Hard errors are intentionally never suppressed.
 - ✅ **Machine-readable output** (`REDZONE_FORMAT=json|sarif`) — JSON Lines and

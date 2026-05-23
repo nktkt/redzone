@@ -7,6 +7,14 @@ All notable changes to **redzone** are documented here. The format is based on
 `v0.18.0` is the first *tagged* release; the `v0.1`–`v0.18` entries below are the
 development milestones that led to it (the commit history references them).
 
+## [Unreleased]
+
+### Added
+- Opt-in `file:line` in stack-trace frames: `REDZONE_SYMBOLIZE=1` resolves each
+  frame to `func (in module) (file:line)` best-effort via `atos` (macOS) /
+  `llvm-symbolizer` (elsewhere), falling back to function+offset per frame. Off by
+  default, so the default trace stays fast and dependency-free.
+
 ## [0.18.0] — 2026-05-23
 
 The first tagged release. redzone is a minimal, educational AddressSanitizer-style

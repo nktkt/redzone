@@ -31,6 +31,7 @@
 
 #include "redzone_rt.h"
 
+#include <dlfcn.h>    // dladdr, to locate a frame's module for symbolization
 #include <errno.h>
 #include <execinfo.h> // backtrace / backtrace_symbols for stack traces
 #include <pthread.h>  // serialize allocation-table access across threads
@@ -281,18 +282,69 @@ static const char *col(const char *code) { return rz_color_on() ? code : ""; }
 //===----------------------------------------------------------------------===//
 //
 // Captured only on the error/slow path (right before aborting), so they cost
-// nothing in steady state. Symbolized in-process via backtrace_symbols --
-// function names and offsets, not file:line (the faulting and allocation
-// file:line already come from debug info). C++ names are left mangled.
+// nothing in steady state. By default frames are symbolized in-process via
+// backtrace_symbols (function names + offsets); C++ names stay mangled. Set
+// REDZONE_SYMBOLIZE=1 for richer "func (in module) (file:line)" frames, resolved
+// best-effort by atos (macOS) / llvm-symbolizer (elsewhere) -- this forks a
+// helper per frame on the error path, so it is opt-in, and any frame it can't
+// resolve falls back to the backtrace_symbols string.
 
 #define RZ_TRACE_MAX 64
 
-// Symbolize the current call stack. Returns the backtrace_symbols array (caller
-// frees; may be NULL), the frame count in *n, and in *start the index of the
-// first frame outside the runtime -- we skip our own frames up to and including
-// the __redzone_* ABI entry point the user actually called.
-static char **capture_trace(int *n, int *start) {
-  void *addrs[RZ_TRACE_MAX];
+static int rz_symbolize_on(void) {
+  static int s = -1;
+  if (s < 0) {
+    const char *e = getenv("REDZONE_SYMBOLIZE");
+    s = (e && e[0] && strcmp(e, "0") != 0) ? 1 : 0;
+  }
+  return s;
+}
+
+// Best-effort: resolve one frame address to "func (in module) (file:line)" via a
+// system symbolizer. Writes into out[outsz] and returns 1 on success, 0 if the
+// frame can't be resolved (caller then falls back to the raw frame string).
+static int symbolize_frame(void *addr, char *out, size_t outsz) {
+  Dl_info info;
+  if (!dladdr(addr, &info) || !info.dli_fname || !info.dli_fbase)
+    return 0;
+  if (strchr(info.dli_fname, '\'')) // a quote would break the shell command
+    return 0;
+  char cmd[1100];
+#if defined(__APPLE__)
+  // atos resolves DWARF via the executable's debug map even without a dSYM.
+  snprintf(cmd, sizeof cmd, "atos -o '%s' -l %p %p 2>/dev/null", info.dli_fname,
+           info.dli_fbase, addr);
+#else
+  // llvm-symbolizer wants the file-relative (static) address.
+  void *rel = (void *)((uintptr_t)addr - (uintptr_t)info.dli_fbase);
+  snprintf(cmd, sizeof cmd,
+           "llvm-symbolizer --obj='%s' --pretty-print %p 2>/dev/null",
+           info.dli_fname, rel);
+#endif
+  FILE *p = popen(cmd, "r");
+  if (!p)
+    return 0;
+  char buf[512];
+  char *got = fgets(buf, sizeof buf, p);
+  pclose(p);
+  if (!got)
+    return 0;
+  size_t len = strlen(buf);
+  while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
+    buf[--len] = '\0';
+  // Reject useless output: empty, a bare hex address, or an unresolved "??".
+  if (len == 0 || strstr(buf, "??") || (buf[0] == '0' && buf[1] == 'x'))
+    return 0;
+  snprintf(out, outsz, "%s", buf);
+  return 1;
+}
+
+// Capture the current call stack. Fills `addrs` (caller-provided, RZ_TRACE_MAX
+// slots) and returns the backtrace_symbols array (caller frees; may be NULL),
+// the frame count in *n, and in *start the index of the first frame outside the
+// runtime -- we skip our own frames up to and including the __redzone_* ABI entry
+// point the user actually called.
+static char **capture_trace(void **addrs, int *n, int *start) {
   int count = backtrace(addrs, RZ_TRACE_MAX);
   char **syms = backtrace_symbols(addrs, count);
   int s = 0;
@@ -321,16 +373,22 @@ static const char *trim_frame(const char *s) {
 
 // Append the call stack to a text report, indented and renumbered from #0.
 static void print_trace_text(FILE *o) {
+  void *addrs[RZ_TRACE_MAX];
   int n, start;
-  char **syms = capture_trace(&n, &start);
+  char **syms = capture_trace(addrs, &n, &start);
   if (!syms)
     return;
+  int sym_on = rz_symbolize_on();
   if (start < n)
     fprintf(o, "    %s#stack (most recent call first):%s\n", col(RZ_DIM),
             col(RZ_RESET));
-  for (int i = start, f = 0; i < n; i++, f++)
-    fprintf(o, "    %s#%d %s%s\n", col(RZ_DIM), f, trim_frame(syms[i]),
-            col(RZ_RESET));
+  for (int i = start, f = 0; i < n; i++, f++) {
+    char buf[512];
+    const char *txt = (sym_on && symbolize_frame(addrs[i], buf, sizeof buf))
+                          ? buf
+                          : trim_frame(syms[i]);
+    fprintf(o, "    %s#%d %s%s\n", col(RZ_DIM), f, txt, col(RZ_RESET));
+  }
   free(syms);
 }
 
@@ -391,17 +449,23 @@ static void json_str(FILE *o, const char *s) {
 
 // Append the call stack to a JSON finding as a "stack" array of frame strings.
 static void print_trace_json(FILE *o) {
+  void *addrs[RZ_TRACE_MAX];
   int n, start;
-  char **syms = capture_trace(&n, &start);
+  char **syms = capture_trace(addrs, &n, &start);
   if (!syms || start >= n) {
     free(syms);
     return;
   }
+  int sym_on = rz_symbolize_on();
   fputs(",\"stack\":[", o);
   for (int i = start, f = 0; i < n; i++, f++) {
+    char buf[512];
+    const char *txt = (sym_on && symbolize_frame(addrs[i], buf, sizeof buf))
+                          ? buf
+                          : trim_frame(syms[i]);
     if (f)
       fputc(',', o);
-    json_str(o, trim_frame(syms[i]));
+    json_str(o, txt);
   }
   fputc(']', o);
   free(syms);

@@ -128,8 +128,11 @@ access, so you see how the program got there — not just the faulting line:
 ```
 
 Traces are captured only when an error is detected, so they add no runtime cost
-to clean code. In JSON output each finding gains a `"stack"` array. Frames are
-symbolized in-process (function names + offsets); C++ names are left mangled.
+to clean code. In JSON output each finding gains a `"stack"` array. By default
+frames show function names + offsets (C++ names left mangled); set
+`REDZONE_SYMBOLIZE=1` for richer `func (in module) (file:line)` frames, resolved
+best-effort by `atos` (macOS) / `llvm-symbolizer` (elsewhere) — any frame that
+can't be resolved falls back to the function+offset form.
 
 Reports are **colorized** when stderr is a terminal. Color is disabled when the
 output is piped or redirected (so logs and CI stay clean), honors the

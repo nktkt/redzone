@@ -125,6 +125,20 @@ else
   bad "leaks deduplicated by allocation site (site lines=$sites)"; cat "$derr"
 fi
 
+# 9. REDZONE_SYMBOLIZE upgrades trace frames to file:line (best-effort). Match a
+#    frame line (#N ...) carrying the source file, not the always-present "at" line.
+if command -v atos >/dev/null 2>&1 || command -v llvm-symbolizer >/dev/null 2>&1; then
+  syerr="$TMP/ho.sym.err"
+  REDZONE_SYMBOLIZE=1 bash -c '"$0" >/dev/null 2>"$1"' "$TMP/ho" "$syerr" 2>/dev/null
+  if grep -qE '#[0-9]+ .*heap_overflow\.c:' "$syerr"; then
+    pass "REDZONE_SYMBOLIZE adds file:line to stack frames"
+  else
+    bad "REDZONE_SYMBOLIZE adds file:line to stack frames"; cat "$syerr"
+  fi
+else
+  echo "SKIP  REDZONE_SYMBOLIZE (no atos/llvm-symbolizer found)"
+fi
+
 echo
 if [[ "$fail" -eq 0 ]]; then
   echo "report tests passed."
