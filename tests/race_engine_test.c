@@ -70,6 +70,158 @@ int main(void) {
   rz_access none = {0};
   check("no prior access -> no race", rz_race_check(&none, 1, &t1, 1), 0);
 
+  //==========================================================================
+  // State machine: drive the engine through explicit threads, a per-location
+  // shadow, and synchronization events -- still fully deterministic.
+  //==========================================================================
+  const uintptr_t X = 0x4000;
+  const uintptr_t Y = 0x8000;
+
+  // A. Two unsynchronized writes to the same location from different threads.
+  {
+    rz_race_state st;
+    check("sm: state init", rz_race_state_init(&st), 0);
+    rz_thread a, b;
+    rz_thread_init(&st, &a); // tid 0
+    rz_thread_init(&st, &b); // tid 1
+    rz_race_access(&st, &a, X, 1);
+    int r = rz_race_access(&st, &b, X, 1);
+    check("sm: unsync write/write -> race", r, 1);
+    rz_race_state_destroy(&st);
+  }
+
+  // B. The same two writes, but ordered by a mutex -> no race.
+  {
+    rz_race_state st;
+    rz_race_state_init(&st);
+    rz_thread a, b;
+    rz_thread_init(&st, &a);
+    rz_thread_init(&st, &b);
+    rz_sync mtx;
+    rz_sync_init(&mtx);
+    rz_mutex_acquire(&a, &mtx);
+    rz_race_access(&st, &a, X, 1);
+    rz_mutex_release(&a, &mtx);
+    rz_mutex_acquire(&b, &mtx);
+    int r = rz_race_access(&st, &b, X, 1);
+    rz_mutex_release(&b, &mtx);
+    check("sm: mutex-ordered write/write -> no race", r, 0);
+    rz_race_state_destroy(&st);
+  }
+
+  // C. Publication: a writes data then releases; b acquires then reads -> the
+  //    read sees the write through the release/acquire edge -> no race.
+  {
+    rz_race_state st;
+    rz_race_state_init(&st);
+    rz_thread a, b;
+    rz_thread_init(&st, &a);
+    rz_thread_init(&st, &b);
+    rz_sync flag;
+    rz_sync_init(&flag);
+    rz_race_access(&st, &a, X, 1); // produce
+    rz_mutex_release(&a, &flag);   // publish
+    rz_mutex_acquire(&b, &flag);   // observe
+    int r = rz_race_access(&st, &b, X, 0); // consume (read)
+    check("sm: publication read -> no race", r, 0);
+    rz_race_state_destroy(&st);
+  }
+
+  // D. Thread create/join ordering: the parent's pre-create write is ordered
+  //    before the child, and the child's write before the post-join parent read.
+  {
+    rz_race_state st;
+    rz_race_state_init(&st);
+    rz_thread parent;
+    rz_thread_init(&st, &parent);
+    rz_race_access(&st, &parent, X, 1); // before create
+    rz_thread child;
+    rz_thread_create(&st, &parent, &child);
+    int r1 = rz_race_access(&st, &child, X, 1); // create-ordered
+    check("sm: create-ordered write -> no race", r1, 0);
+    rz_race_access(&st, &child, Y, 1);
+    rz_thread_join(&parent, &child);
+    int r2 = rz_race_access(&st, &parent, Y, 0); // join-ordered
+    check("sm: join-ordered read -> no race", r2, 0);
+    rz_race_state_destroy(&st);
+  }
+
+  // E. Concurrent read then write to the same location -> race.
+  {
+    rz_race_state st;
+    rz_race_state_init(&st);
+    rz_thread a, b;
+    rz_thread_init(&st, &a);
+    rz_thread_init(&st, &b);
+    rz_race_access(&st, &a, X, 0);          // read
+    int r = rz_race_access(&st, &b, X, 1);  // concurrent write
+    check("sm: unsync read/write -> race", r, 1);
+    rz_race_state_destroy(&st);
+  }
+
+  // F. Concurrent read/read -> no race.
+  {
+    rz_race_state st;
+    rz_race_state_init(&st);
+    rz_thread a, b;
+    rz_thread_init(&st, &a);
+    rz_thread_init(&st, &b);
+    rz_race_access(&st, &a, X, 0);
+    int r = rz_race_access(&st, &b, X, 0);
+    check("sm: concurrent read/read -> no race", r, 0);
+    rz_race_state_destroy(&st);
+  }
+
+  // G. Different locations never interfere, even fully unsynchronized.
+  {
+    rz_race_state st;
+    rz_race_state_init(&st);
+    rz_thread a, b;
+    rz_thread_init(&st, &a);
+    rz_thread_init(&st, &b);
+    rz_race_access(&st, &a, X, 1);
+    int r = rz_race_access(&st, &b, Y, 1); // different word
+    check("sm: distinct locations -> no race", r, 0);
+    rz_race_state_destroy(&st);
+  }
+
+  // H. Two sequential writes by the SAME thread are program-ordered -> no race.
+  {
+    rz_race_state st;
+    rz_race_state_init(&st);
+    rz_thread a;
+    rz_thread_init(&st, &a);
+    rz_race_access(&st, &a, X, 1);
+    int r = rz_race_access(&st, &a, X, 1);
+    check("sm: same-thread write/write -> no race", r, 0);
+    rz_race_state_destroy(&st);
+  }
+
+  // I. A write released under a mutex still races with a thread that never
+  //    acquired it (no happens-before edge to that thread).
+  {
+    rz_race_state st;
+    rz_race_state_init(&st);
+    rz_thread a, b, c;
+    rz_thread_init(&st, &a);
+    rz_thread_init(&st, &b);
+    rz_thread_init(&st, &c);
+    rz_sync mtx;
+    rz_sync_init(&mtx);
+    rz_mutex_acquire(&a, &mtx);
+    rz_race_access(&st, &a, X, 1);
+    rz_mutex_release(&a, &mtx);
+    // b synchronizes through the mutex -> ordered.
+    rz_mutex_acquire(&b, &mtx);
+    int rb = rz_race_access(&st, &b, X, 1);
+    rz_mutex_release(&b, &mtx);
+    check("sm: mutex acquirer -> no race", rb, 0);
+    // c never touches the mutex -> still concurrent with b's write -> race.
+    int rc = rz_race_access(&st, &c, X, 1);
+    check("sm: non-acquirer -> race", rc, 1);
+    rz_race_state_destroy(&st);
+  }
+
   printf("\n");
   if (failures == 0) {
     printf("race-engine: all scenarios passed\n");

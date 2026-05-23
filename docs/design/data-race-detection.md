@@ -1,13 +1,16 @@
 # Design note: data-race detection (Horizon 5)
 
-Status: **in progress — engine core only.** This note covers the design,
-algorithm choice, costs, and phasing. The correctness-critical happens-before
-*engine* (vector clocks + the race decision) is implemented and unit-tested in
-isolation — `runtime/redzone_race.{c,h}`, exercised by
-`scripts/test_race_engine.sh` in CI — but it is **not yet wired into anything**:
-the per-thread clocks (TLS), synchronization interception, per-location shadow,
-and pass instrumentation remain unbuilt. A normal redzone build is unaffected;
-the detector is a large, separate sub-project still mostly ahead.
+Status: **in progress — engine + deterministic state machine.** This note
+covers the design, algorithm choice, costs, and phasing. The
+correctness-critical happens-before *engine* (vector clocks + the race decision)
+**and** a full **state machine** built on it — explicit per-thread clocks, a
+per-location shadow, and mutex/create/join synchronization events — are
+implemented and unit-tested in isolation (`runtime/redzone_race.{c,h}`, exercised
+by `scripts/test_race_engine.sh` in CI). What is still **not wired into
+anything**: binding those operations to *real* execution — per-thread clocks in
+TLS, intercepting actual `pthread_*` calls, attaching the shadow to live
+addresses, and emitting the access hook from the pass. A normal redzone build is
+unaffected; the detector is a large, separate sub-project still mostly ahead.
 
 ## Goal
 
@@ -134,11 +137,21 @@ but little else.
    (`runtime/redzone_race.{c,h}`, `scripts/test_race_engine.sh`). This is the
    correctness-critical core; validating it in isolation de-risks everything
    above it.
-1b. **Core happens-before MVP** (next) — drive the engine from real execution:
-   per-thread clocks in TLS; intercept `pthread_mutex_lock`/`unlock` and
-   `pthread_create`/`join`; a per-location shadow; instrument loads/stores via the
-   pass. Detect write-write and read-write races. (Deliberately incomplete: other
-   primitives aren't modeled yet, so it runs opt-in and its misses are known.)
+1a. **Deterministic state machine** ✅ — compose the engine into a working
+   detector over *explicit* thread handles, an open-addressing per-location shadow
+   (`RZ_RACE_BUCKETS` × `RZ_RACE_CELLS`), and synchronization events
+   (`rz_mutex_acquire`/`release`, `rz_thread_create`/`join`). Still no OS threads,
+   TLS, or pass — every operation is called by hand, so the whole detector logic
+   (clock transfer, shadow eviction, the per-access check loop) is unit-tested
+   with zero concurrency (`tests/race_engine_test.c`, scenarios A–I). Eviction and
+   a full shadow table can only drop old accesses → missed races, never false
+   reports.
+1b. **Core happens-before MVP** (next) — drive that same state machine from real
+   execution: per-thread clocks in TLS; intercept `pthread_mutex_lock`/`unlock`
+   and `pthread_create`/`join`; attach the shadow to live addresses; instrument
+   loads/stores via the pass. Detect write-write and read-write races.
+   (Deliberately incomplete: other primitives aren't modeled yet, so it runs
+   opt-in and its misses are known.)
 2. **More cells + more primitives** — multiple shadow cells; rwlocks, condvars,
    barriers, semaphores, `pthread_once`.
 3. **Atomics with memory orders.**
