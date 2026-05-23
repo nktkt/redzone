@@ -43,6 +43,11 @@ jobs:
         # preserved), and an overflow of it is still detected.
         run: ./scripts/test_cross_tu.sh
 
+      - name: Rich-report tests (stack traces + suppressions)
+        # Asserts error reports carry a symbolized stack trace (text and JSON)
+        # and that REDZONE_SUPPRESSIONS silences a matching leak.
+        run: ./scripts/test_reports.sh
+
       - name: Build-system integration examples
         # Exercise both the CMake and Make integration recipes end to end. The
         # pass plugin (build/libRedzonePass.so) already exists from the earlier

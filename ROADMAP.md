@@ -71,8 +71,10 @@ Turn a compiler pass into a product people choose to use.
 
 - ✅ **CLI / compiler wrapper** (`scripts/redzone`) — `build`/`run` subcommands
   that automate emit-IR → instrument → link, and build the plugin on first use.
-- **Great reports** — symbolized, colorized, deduplicated, with stack traces.
-- **Suppression files** — silence known/third-party issues.
+- 🟡 **Great reports** — symbolized **stack traces** on every error, in text and
+  JSON (v0.16). Colorizing, deduplication, and file:line in traces remain.
+- 🟡 **Suppression files** — `REDZONE_SUPPRESSIONS` silences known **leaks** by
+  allocation file (v0.16). Hard errors are intentionally never suppressed.
 - ✅ **Machine-readable output** (`REDZONE_FORMAT=json|sarif`) — JSON Lines and
   SARIF 2.1.0, emitted to stderr (v0.8).
 - ✅ **Build-system recipes** — CMake (`cmake/Redzone.cmake`) and Make, both via

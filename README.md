@@ -107,6 +107,45 @@ stdout). The SARIF output can be uploaded to GitHub code scanning to annotate
 pull requests — see **[docs/ci-integration.md](docs/ci-integration.md)** for a
 ready-to-use GitHub Actions workflow.
 
+## Stack traces
+
+Every error report includes a **symbolized call stack** at the point of the bad
+access, so you see how the program got there — not just the faulting line:
+
+```
+==redzone ERROR: heap-buffer-overflow
+  WRITE of size 4 at 0x101395b80
+    at examples/heap_overflow.c:14
+    #stack (most recent call first):
+    #0 prog  0x... write_past_end + 40
+    #1 prog  0x... main + 120
+  0 byte(s) after a 16-byte region [0x101395b70, 0x101395b80)
+    allocated at examples/heap_overflow.c:7
+```
+
+Traces are captured only when an error is detected, so they add no runtime cost
+to clean code. In JSON output each finding gains a `"stack"` array. Frames are
+symbolized in-process (function names + offsets); C++ names are left mangled.
+
+## Suppressions
+
+Known, intentional **leaks** (e.g. a global cache never freed) can be silenced
+with a suppression file, so the rest of your program's leaks still surface:
+
+```bash
+cat > redzone.supp <<'EOF'
+# silence leaks allocated in third-party code
+leak:vendor/
+leak:cache.c
+EOF
+REDZONE_SUPPRESSIONS=redzone.supp ./scripts/redzone run prog.c
+```
+
+Each `leak:<substring>` rule matches a leak whose allocation file contains the
+substring; a leak matching any rule is not reported, and a run whose every leak
+is suppressed exits cleanly. Only leaks are suppressible by design — a buffer
+overflow or use-after-free is a real bug, so redzone always reports it.
+
 ## Roadmap
 
 The near-term goal is a correct heap checker; the long-term goal is a scalable,
@@ -155,13 +194,14 @@ and write), double-free, and invalid-free, plus several valid programs.
 **global-buffer-overflow**, **use-after-free**, **double-free**, **invalid-free**
 and **memory leaks** across the full C/C++ allocator surface —
 `malloc`/`calloc`/`realloc`/`free`, `aligned_alloc`/`posix_memalign`, and C++
-`new`/`new[]`/`delete`/`delete[]` — reporting the faulting `file:line` (plus the
-allocation site for heap bugs). The per-access check uses **shadow memory**
-(O(1)). Globals are covered whether static/internal or external (cross-TU). It
-ships a `redzone` CLI, text/JSON/SARIF output, CMake & Make integration, and a
-23-case suite plus format, cross-TU, integration, and performance-regression
-checks in CI. Remaining gaps: C++17 aligned `new`/`delete`, underflow of an
-external global, and threading.
+`new`/`new[]`/`delete`/`delete[]` — reporting the faulting `file:line` and a
+**symbolized stack trace** (plus the allocation site for heap bugs). The
+per-access check uses **shadow memory** (O(1)). Globals are covered whether
+static/internal or external (cross-TU). It ships a `redzone` CLI, text/JSON/SARIF
+output, **leak suppressions**, CMake & Make integration, and a 23-case suite plus
+format, cross-TU, report, integration, and performance-regression checks in CI.
+Remaining gaps: C++17 aligned `new`/`delete`, underflow of an external global,
+and threading.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
 the allocator path is **O(1)** per `malloc`/`free` (each block finds its metadata

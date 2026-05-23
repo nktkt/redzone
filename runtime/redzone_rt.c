@@ -32,6 +32,7 @@
 #include "redzone_rt.h"
 
 #include <errno.h>
+#include <execinfo.h> // backtrace / backtrace_symbols for stack traces
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -224,6 +225,62 @@ static Block *block_from_user_ptr(void *ptr) {
 }
 
 //===----------------------------------------------------------------------===//
+// Stack traces
+//===----------------------------------------------------------------------===//
+//
+// Captured only on the error/slow path (right before aborting), so they cost
+// nothing in steady state. Symbolized in-process via backtrace_symbols --
+// function names and offsets, not file:line (the faulting and allocation
+// file:line already come from debug info). C++ names are left mangled.
+
+#define RZ_TRACE_MAX 64
+
+// Symbolize the current call stack. Returns the backtrace_symbols array (caller
+// frees; may be NULL), the frame count in *n, and in *start the index of the
+// first frame outside the runtime -- we skip our own frames up to and including
+// the __redzone_* ABI entry point the user actually called.
+static char **capture_trace(int *n, int *start) {
+  void *addrs[RZ_TRACE_MAX];
+  int count = backtrace(addrs, RZ_TRACE_MAX);
+  char **syms = backtrace_symbols(addrs, count);
+  int s = 0;
+  if (syms)
+    for (int i = 0; i < count; i++)
+      if (strstr(syms[i], "__redzone_"))
+        s = i + 1; // the first user frame is just past the ABI entry point
+  *n = count;
+  *start = s;
+  return syms;
+}
+
+// Strip a leading frame number that some backtrace_symbols implementations
+// (e.g. macOS) prefix, so it doesn't collide with our own #N numbering.
+static const char *trim_frame(const char *s) {
+  while (*s == ' ')
+    s++;
+  if (*s >= '0' && *s <= '9') {
+    while (*s >= '0' && *s <= '9')
+      s++;
+    while (*s == ' ')
+      s++;
+  }
+  return s;
+}
+
+// Append the call stack to a text report, indented and renumbered from #0.
+static void print_trace_text(FILE *o) {
+  int n, start;
+  char **syms = capture_trace(&n, &start);
+  if (!syms)
+    return;
+  if (start < n)
+    fputs("    #stack (most recent call first):\n", o);
+  for (int i = start, f = 0; i < n; i++, f++)
+    fprintf(o, "    #%d %s\n", f, trim_frame(syms[i]));
+  free(syms);
+}
+
+//===----------------------------------------------------------------------===//
 // Output formats (text / json / sarif), selected via the REDZONE_FORMAT env var
 //===----------------------------------------------------------------------===//
 
@@ -239,6 +296,7 @@ typedef struct {
   int freed; // region already freed?
   const char *alloc_file;
   int alloc_line;
+  int with_stack; // attach the captured call stack (errors, not leaks)?
 } Finding;
 
 typedef enum { FMT_TEXT, FMT_JSON, FMT_SARIF } rz_format_t;
@@ -277,6 +335,24 @@ static void json_str(FILE *o, const char *s) {
   fputc('"', o);
 }
 
+// Append the call stack to a JSON finding as a "stack" array of frame strings.
+static void print_trace_json(FILE *o) {
+  int n, start;
+  char **syms = capture_trace(&n, &start);
+  if (!syms || start >= n) {
+    free(syms);
+    return;
+  }
+  fputs(",\"stack\":[", o);
+  for (int i = start, f = 0; i < n; i++, f++) {
+    if (f)
+      fputc(',', o);
+    json_str(o, trim_frame(syms[i]));
+  }
+  fputc(']', o);
+  free(syms);
+}
+
 static void json_finding(FILE *o, const Finding *fd) {
   fputs("{\"tool\":\"redzone\",\"error\":", o);
   json_str(o, fd->kind);
@@ -301,6 +377,8 @@ static void json_finding(FILE *o, const Finding *fd) {
     }
     fputc('}', o);
   }
+  if (fd->with_stack)
+    print_trace_json(o);
   fputc('}', o);
 }
 
@@ -356,9 +434,11 @@ static void report_free_error(const char *kind, const void *ptr) {
     fd.kind = kind;
     fd.is_write = -1;
     fd.addr = (uintptr_t)ptr;
+    fd.with_stack = 1;
     emit_finding_and_abort(&fd);
   }
   fprintf(stderr, "==redzone ERROR: %s of %p\n", kind, ptr);
+  print_trace_text(stderr);
   abort();
 }
 
@@ -583,6 +663,7 @@ static void report(const char *kind, const void *addr, size_t size, int is_write
     fd.freed = b->freed;
     fd.alloc_file = b->alloc_file;
     fd.alloc_line = b->alloc_line;
+    fd.with_stack = 1;
     emit_finding_and_abort(&fd);
   }
   uintptr_t a = (uintptr_t)addr;
@@ -595,6 +676,7 @@ static void report(const char *kind, const void *addr, size_t size, int is_write
           addr);
   if (file)
     fprintf(stderr, "    at %s:%d\n", file, line);
+  print_trace_text(stderr);
 
   if (a < b->user_addr)
     fprintf(stderr, "  %llu byte(s) before a %zu-byte region [%p, %p)%s\n",
@@ -624,6 +706,7 @@ static void report_simple(const char *kind, const void *addr, size_t size,
     fd.addr = (uintptr_t)addr;
     fd.file = file;
     fd.line = line;
+    fd.with_stack = 1;
     emit_finding_and_abort(&fd);
   }
   fprintf(stderr, "==redzone ERROR: %s\n", kind);
@@ -631,6 +714,7 @@ static void report_simple(const char *kind, const void *addr, size_t size,
           addr);
   if (file)
     fprintf(stderr, "    at %s:%d\n", file, line);
+  print_trace_text(stderr);
   abort();
 }
 
@@ -665,19 +749,84 @@ void __redzone_check(const void *addr, size_t size, int is_write,
 }
 
 //===----------------------------------------------------------------------===//
+// Leak suppressions
+//===----------------------------------------------------------------------===//
+//
+// A leak whose allocation file matches a user-provided substring is silenced.
+// Only leaks are suppressible: a hard overflow/use-after-free is a real bug and
+// is always reported (continuing past one would be unsafe). REDZONE_SUPPRESSIONS
+// names a file of `leak:<substring>` rules (blank lines and `#` comments ignored).
+
+static char **g_supp = NULL;
+static size_t g_supp_n = 0;
+
+static void load_suppressions(void) {
+  static int loaded = 0;
+  if (loaded)
+    return;
+  loaded = 1;
+  const char *path = getenv("REDZONE_SUPPRESSIONS");
+  if (!path)
+    return;
+  FILE *f = fopen(path, "r");
+  if (!f)
+    return;
+  char line[512];
+  while (fgets(line, sizeof line, f)) {
+    char *s = line;
+    while (*s == ' ' || *s == '\t')
+      s++;
+    if (*s == '#' || *s == '\0' || *s == '\n' || *s == '\r')
+      continue;
+    size_t len = strlen(s);
+    while (len && (s[len - 1] == '\n' || s[len - 1] == '\r' ||
+                   s[len - 1] == ' ' || s[len - 1] == '\t'))
+      s[--len] = '\0';
+    if (strncmp(s, "leak:", 5) != 0)
+      continue; // only leak rules are supported for now
+    const char *pat = s + 5;
+    if (*pat == '\0')
+      continue;
+    char **g = (char **)realloc(g_supp, (g_supp_n + 1) * sizeof(char *));
+    if (!g)
+      break;
+    g_supp = g;
+    g_supp[g_supp_n] = strdup(pat);
+    if (g_supp[g_supp_n])
+      g_supp_n++;
+  }
+  fclose(f);
+}
+
+static int leak_suppressed(const char *file) {
+  if (!file)
+    return 0;
+  for (size_t i = 0; i < g_supp_n; i++)
+    if (strstr(file, g_supp[i]))
+      return 1;
+  return 0;
+}
+
+// A still-live block the user hasn't suppressed -- i.e. a leak we should report.
+static int is_unsuppressed_leak(const Block *b) {
+  return !b->freed && !leak_suppressed(b->alloc_file);
+}
+
+//===----------------------------------------------------------------------===//
 // Leak detection (at exit)
 //===----------------------------------------------------------------------===//
 //
-// On a clean exit, any block still in the table that was never freed is a leak.
-// (Programs that abort via __redzone_check/__redzone_free never get here, since
-// abort() bypasses atexit handlers -- so a detected bug is never also reported
-// as a leak.) This is a simple "never freed by exit" check; reachability-aware
-// leak analysis is a later refinement.
+// On a clean exit, any block still in the table that was never freed (and not
+// suppressed) is a leak. (Programs that abort via __redzone_check/__redzone_free
+// never get here, since abort() bypasses atexit handlers -- so a detected bug is
+// never also reported as a leak.) This is a simple "never freed by exit" check;
+// reachability-aware leak analysis is a later refinement.
 
 static void report_leaks(void) {
+  load_suppressions();
   size_t leaked = 0, bytes = 0;
   for (size_t i = 0; i < g_count; i++)
-    if (!g_blocks[i].freed) {
+    if (is_unsuppressed_leak(&g_blocks[i])) {
       leaked++;
       bytes += g_blocks[i].user_size;
     }
@@ -689,7 +838,7 @@ static void report_leaks(void) {
     if (fmt == FMT_JSON) {
       for (size_t i = 0; i < g_count; i++) {
         Block *b = &g_blocks[i];
-        if (b->freed)
+        if (!is_unsuppressed_leak(b))
           continue;
         Finding fd = {0};
         fd.kind = "memory-leak";
@@ -707,7 +856,7 @@ static void report_leaks(void) {
         size_t k = 0;
         for (size_t i = 0; i < g_count; i++) {
           Block *b = &g_blocks[i];
-          if (b->freed)
+          if (!is_unsuppressed_leak(b))
             continue;
           arr[k].kind = "memory-leak";
           arr[k].is_write = -1;
@@ -730,7 +879,7 @@ static void report_leaks(void) {
           bytes);
   for (size_t i = 0; i < g_count; i++) {
     Block *b = &g_blocks[i];
-    if (b->freed)
+    if (!is_unsuppressed_leak(b))
       continue;
     if (b->alloc_file)
       fprintf(stderr, "  %zu byte(s) allocated at %s:%d\n", b->user_size,
