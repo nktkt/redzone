@@ -18,6 +18,14 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 PLUGIN="$ROOT/build/libRedzonePass.so"
 RUNTIME="$ROOT/runtime/redzone_rt.c"
+# Race mode links the happens-before engine, its runtime glue, and the program
+# driver (constructor + exit-time report) instead of the address runtime.
+RACE_RUNTIME=(
+  "$ROOT/runtime/redzone_race.c"
+  "$ROOT/runtime/redzone_race_rt.c"
+  "$ROOT/runtime/redzone_race_main.c"
+)
+RACE=0 # set by --race
 
 PROG="$(basename "$0")"
 
@@ -32,27 +40,36 @@ usage() {
 redzone — a mini AddressSanitizer for C (LLVM-based memory-safety detector)
 
 USAGE:
-  $PROG build <src.c> [more.c ...] [-o OUTPUT]
+  $PROG build [--race] <src.c> [more.c ...] [-o OUTPUT]
       Instrument and link the sources into an executable.
       Default OUTPUT is the first source's basename without ".c"
       (placed in the current directory).
 
-  $PROG run <src.c> [more.c ...] [-o OUTPUT] [-- ARGS...]
+  $PROG run [--race] <src.c> [more.c ...] [-o OUTPUT] [-- ARGS...]
       Build (as above) and then run the resulting executable, forwarding
       any ARGS after "--". The CLI exits with the program's own exit code.
 
   $PROG -h | --help
       Show this help.
 
+OPTIONS:
+  --race
+      Build in DATA-RACE detection mode instead of memory-safety mode: the
+      pass emits happens-before hooks and links the race runtime. A data race
+      prints "==redzone WARNING: data race" with both accesses' file:line and
+      the process exits nonzero. (Opt-in; a separate, heavier mode.)
+
 EXAMPLES:
   $PROG run examples/valid.c
   $PROG run examples/heap_overflow.c
   $PROG build src/a.c src/b.c -o myprog
   $PROG run myprog.c -- arg1 arg2
+  $PROG run --race examples/race_data_race.c
 
-A buggy program prints "==redzone ERROR: <kind>" to stderr and aborts with a
-nonzero status; a clean program exits 0. The pass plugin is built automatically
-the first time it is needed.
+In memory-safety mode a buggy program prints "==redzone ERROR: <kind>" to
+stderr and aborts nonzero; a clean program exits 0. In --race mode a racy
+program reports "data race" and exits nonzero. The pass plugin is built
+automatically the first time it is needed.
 EOF
 }
 
@@ -120,6 +137,10 @@ parse_args() {
         OUTPUT="${1#-o}"
         shift
         ;;
+      --race)
+        RACE=1
+        shift
+        ;;
       -*)
         die "unknown option '$1' (see '$PROG --help')"
         ;;
@@ -159,6 +180,20 @@ do_build() {
   # Clean up intermediate IR on exit.
   trap 'rm -rf "$TMPDIR_RZ"' EXIT
 
+  # Mode-specific knobs. Race mode adds the -redzone-race pass option, links the
+  # race runtime + pthreads, and optimizes first (-O1) so promotable thread-local
+  # scalars become registers and only genuine memory accesses are instrumented.
+  local optlevel="-O0"
+  local opt_args=(-load-pass-plugin="$PLUGIN" -passes=redzone)
+  local runtime_files=("$RUNTIME")
+  local link_flags=()
+  if [[ "$RACE" -eq 1 ]]; then
+    optlevel="-O1"
+    opt_args+=(-redzone-race)
+    runtime_files=("${RACE_RUNTIME[@]}")
+    link_flags+=(-pthread)
+  fi
+
   local instr_irs=()
   local i=0
   for src in "${SOURCES[@]}"; do
@@ -169,10 +204,10 @@ do_build() {
     local ll="$TMPDIR_RZ/${i}_${stem}.ll"
     local instr="$TMPDIR_RZ/${i}_${stem}.instr.ll"
 
-    clang -g -O0 -S -emit-llvm "$src" -o "$ll"
+    clang -g "$optlevel" -S -emit-llvm "$src" -o "$ll"
     # Instrument; the pass prints a one-line diagnostic to stderr -- keep it
     # quiet on success, but surface it (and fail) if opt errors.
-    if ! opt -load-pass-plugin="$PLUGIN" -passes=redzone -S "$ll" -o "$instr" \
+    if ! opt "${opt_args[@]}" -S "$ll" -o "$instr" \
          2>"$TMPDIR_RZ/opt.err"; then
       cat "$TMPDIR_RZ/opt.err" >&2
       die "instrumentation failed for $src"
@@ -184,7 +219,8 @@ do_build() {
   # Link all instrumented IRs together with the runtime. The runtime is
   # compiled here WITHOUT the pass (we pass the .c straight to clang), so it
   # does not get instrumented and therefore does not recurse.
-  clang -g "${instr_irs[@]}" "$RUNTIME" -o "$OUTPUT"
+  clang -g "${instr_irs[@]}" "${runtime_files[@]}" \
+    ${link_flags[@]+"${link_flags[@]}"} -o "$OUTPUT"
 }
 
 # --- subcommands ------------------------------------------------------------

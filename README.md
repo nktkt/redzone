@@ -12,18 +12,20 @@ The name comes from the *red zones*: poisoned guard regions placed around every 
 
 | Detected ✅ | Out of scope (for now) ❌ |
 |---|---|
-| Heap buffer overflow (read/write past a `malloc`'d region) | *Detecting* data races |
-| Stack buffer overflow (past a fixed-size local) | Underflow of an *external* global |
+| Heap buffer overflow (read/write past a `malloc`'d region) | Underflow of an *external* global |
+| Stack buffer overflow (past a fixed-size local) | |
 | Global buffer overflow (static/internal **and** external globals) | |
 | Use-after-free (read/write after a region is freed) | |
 | Double-free and invalid-free | |
 | Memory leaks (allocations never freed, reported at exit) | |
+| **Data races** — opt-in `--race` mode (experimental); see below | |
 
-The runtime is **thread-safe** — it works correctly in multithreaded programs (no
-false positives or crashes from concurrent allocations); it just doesn't *detect*
-data races, which is a separate analysis.
+The default runtime is **thread-safe** — it works correctly in multithreaded
+programs (no false positives or crashes from concurrent allocations). On top of
+that, an opt-in [`--race` mode](#data-race-detection) *detects* data races with a
+happens-before analysis (a separate, heavier mode).
 
-Keeping the scope tight is deliberate: nail heap bugs first, expand later.
+Keeping the default scope tight is deliberate: nail heap bugs first, expand later.
 
 ## How it works
 
@@ -196,6 +198,48 @@ Either way, the excluded code's **heap allocations are still tracked** (its
 it only removes the per-access checks and stack red-zoning. (`src:` matches a
 translation unit's source file; `fun:` matches the — possibly mangled — function
 name.)
+
+## Data-race detection
+
+Beyond memory safety, redzone has an **opt-in data-race detector** (experimental).
+It finds **data races** — two accesses to the same location from different
+threads, at least one a write, with no synchronization ordering them — using a
+**happens-before** (vector-clock) analysis, the same model ThreadSanitizer uses.
+Its guiding rule is **no false positives**: a race is reported only when the
+program's own synchronization genuinely fails to order the two accesses.
+
+Run it with `--race`:
+
+```sh
+scripts/redzone run --race examples/race_data_race.c
+```
+
+```
+==redzone WARNING: data race
+  write by thread 2 at race_data_race.c:14
+  previous write by thread 1 at race_data_race.c:14
+  address 0x...
+[redzone] 1 data race(s) detected
+```
+
+A correctly synchronized program runs clean and exits 0; a racy one reports each
+distinct race (deduplicated by source line) and exits nonzero. Set
+`REDZONE_RACE_NO_EXIT=1` to keep the program's own exit status, or
+`REDZONE_RACE_VERBOSE=1` to print every race (no dedup).
+
+**What it understands.** The detector models the happens-before edges from
+`pthread_create`/`join`, `pthread_mutex_lock`/`unlock`/`trylock`, reader/writer
+locks, condition variables (`pthread_cond_wait`/`timedwait`), and C/C++ **atomics**
+(loads/stores, `atomicrmw`, `cmpxchg`) — so correct code using any of these does
+not false-positive.
+
+**Limitations.** It is a distinct, heavier mode (its own runtime; not combined
+with the address checker), and it is deliberately incomplete: barriers,
+semaphores, `pthread_once`, and standalone fences (`atomic_thread_fence`) are not
+yet modeled, and unmodeled synchronization can cause false positives. Atomic
+memory orders are over-approximated (treated as ordering), which can only ever
+*miss* a race, never invent one. See
+[`docs/design/data-race-detection.md`](docs/design/data-race-detection.md).
 
 ## Roadmap
 
