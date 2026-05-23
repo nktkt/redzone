@@ -60,9 +60,15 @@ jobs:
 
       - name: Race-engine unit test
         # The happens-before core of the (in-progress) data-race detector:
-        # deterministic vector-clock scenarios, no threads. See
-        # docs/design/data-race-detection.md.
+        # deterministic vector-clock + state-machine scenarios, no OS threads.
+        # See docs/design/data-race-detection.md.
         run: ./scripts/test_race_engine.sh
+
+      - name: Race-runtime test
+        # The runtime glue driving the detector from REAL pthreads (TLS clocks,
+        # mutex/create/join wrappers). Run many times: assertions are
+        # timing-independent, so every run must pass (a flaky run fails CI).
+        run: ./scripts/test_race_runtime.sh
 
       - name: Reproducible-build (determinism) check
         # Instrumenting the same source twice must yield byte-identical objects --
