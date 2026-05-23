@@ -655,6 +655,12 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         {"pthread_join", "rz_rt_pthread_join"},
         {"pthread_mutex_lock", "rz_rt_pthread_mutex_lock"},
         {"pthread_mutex_unlock", "rz_rt_pthread_mutex_unlock"},
+        {"pthread_mutex_trylock", "rz_rt_pthread_mutex_trylock"},
+        {"pthread_rwlock_rdlock", "rz_rt_pthread_rwlock_rdlock"},
+        {"pthread_rwlock_wrlock", "rz_rt_pthread_rwlock_wrlock"},
+        {"pthread_rwlock_tryrdlock", "rz_rt_pthread_rwlock_tryrdlock"},
+        {"pthread_rwlock_trywrlock", "rz_rt_pthread_rwlock_trywrlock"},
+        {"pthread_rwlock_unlock", "rz_rt_pthread_rwlock_unlock"},
     };
     auto syncTarget = [&](StringRef N) -> const char * {
       // macOS headers give some pthread entry points an assembler label such as

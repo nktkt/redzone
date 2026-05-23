@@ -57,6 +57,20 @@ void rz_rt_mutex_unlock(void *mutex); // release: publish this thread's clock
 // pthread_mutex_lock/unlock so the redirect is a drop-in replacement.
 int rz_rt_pthread_mutex_lock(pthread_mutex_t *mutex);
 int rz_rt_pthread_mutex_unlock(pthread_mutex_t *mutex);
+// trylock records the acquire ONLY when it actually got the lock (returns 0).
+int rz_rt_pthread_mutex_trylock(pthread_mutex_t *mutex);
+
+// rwlock wrappers. A read- or write-lock is modeled as an acquire and an unlock
+// as a release on the same sync object (keyed by the lock address). This
+// over-approximates ordering between concurrent readers -- which is harmless,
+// since read/read is never a race -- while capturing every real reader<->writer
+// and writer<->writer edge, so it stays free of false positives. try-variants
+// record only on success.
+int rz_rt_pthread_rwlock_rdlock(pthread_rwlock_t *rwlock);
+int rz_rt_pthread_rwlock_wrlock(pthread_rwlock_t *rwlock);
+int rz_rt_pthread_rwlock_tryrdlock(pthread_rwlock_t *rwlock);
+int rz_rt_pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock);
+int rz_rt_pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
 
 // Memory access events emitted (eventually) by the instrumentation pass. `size`
 // may span several 8-byte words; each is checked.
