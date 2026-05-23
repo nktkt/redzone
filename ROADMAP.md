@@ -139,10 +139,11 @@ From a tool to a platform.
   trylock, condvar producer/consumer) run clean (`scripts/test_race_e2e.sh`); the
   runtime alone is also stress-tested with real pthreads, 25× in CI. **C/C++
   atomics** are modeled as acquire/release synchronization (loads/stores,
-  `atomicrmw`, `cmpxchg`), so lock-free code no longer false-positives. Remaining
-  breadth — barriers, semaphores, `pthread_once`, precise atomic memory orders and
-  fences, and performance tuning — is still ahead; it stays a distinct opt-in
-  mode.
+  `atomicrmw`, `cmpxchg`), so lock-free code no longer false-positives. A detected
+  race reports both conflicting accesses with thread id and `file:line`,
+  deduplicated by source position. Remaining breadth — barriers, semaphores,
+  `pthread_once`, precise atomic memory orders and fences, and performance tuning
+  — is still ahead; it stays a distinct opt-in mode.
 - **Findings dashboard** — aggregate results across builds, track regressions
   and trends over time, triage workflow. *(The org-scale / SaaS angle.)*
 - **Fuzzing integration** — coverage-guided fuzzing with redzone as the crash

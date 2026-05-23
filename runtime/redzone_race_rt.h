@@ -91,10 +91,13 @@ int rz_rt_pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 void rz_rt_atomic_acquire(const volatile void *addr);
 void rz_rt_atomic_release(const volatile void *addr);
 
-// Memory access events emitted (eventually) by the instrumentation pass. `size`
-// may span several 8-byte words; each is checked.
-void rz_rt_read(const volatile void *addr, size_t size);
-void rz_rt_write(const volatile void *addr, size_t size);
+// Memory access events emitted by the instrumentation pass. `size` may span
+// several 8-byte words; each is checked. `file`/`line` are the access's source
+// location (NULL/0 if unavailable), reported on a race.
+void rz_rt_read(const volatile void *addr, size_t size, const char *file,
+                int line);
+void rz_rt_write(const volatile void *addr, size_t size, const char *file,
+                 int line);
 
 // Total number of races reported so far (for tests and summaries).
 unsigned long rz_rt_race_count(void);

@@ -87,6 +87,14 @@ for entry in "${CASES[@]}"; do
       case_fail=1
       break
     fi
+    # A flagged race must carry a source location in its report (file:line).
+    if [[ "$expect" == "race" ]] && ! grep -qE "at .+\.c:[0-9]+" <<<"$out"; then
+      printf 'FAIL  %-24s (race report missing file:line on run %d/%d)\n' \
+        "$file" "$i" "$RUNS"
+      echo "$out"
+      case_fail=1
+      break
+    fi
     if [[ "$expect" == "clean" && "$flagged" -ne 0 ]]; then
       printf 'FAIL  %-24s (false positive on run %d/%d)\n' "$file" "$i" "$RUNS"
       echo "$out"
