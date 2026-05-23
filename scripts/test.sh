@@ -30,6 +30,7 @@ CASES=(
   "double_free.c:double-free"
   "invalid_free.c:invalid-free"
   "memory_leak.c:memory-leak"
+  "multi_leak.c:memory-leak"
   "stack_overflow.c:stack-buffer-overflow"
   "stack_inbounds_then_oob.c:stack-buffer-overflow"
   "calloc_overflow.c:heap-buffer-overflow"

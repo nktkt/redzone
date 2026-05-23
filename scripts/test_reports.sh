@@ -43,6 +43,7 @@ bad() { printf 'FAIL  %s\n' "$1"; fail=1; }
 
 build examples/heap_overflow.c "$TMP/ho" 2>/dev/null || { echo "build failed"; exit 1; }
 build examples/memory_leak.c "$TMP/ml" 2>/dev/null || { echo "build failed"; exit 1; }
+build examples/multi_leak.c "$TMP/mleak" 2>/dev/null || { echo "build failed"; exit 1; }
 
 # 1. A text error report carries a symbolized stack trace ending in main().
 err="$TMP/ho.err"
@@ -94,6 +95,34 @@ if [[ "$code" -ne 0 ]] && grep -q '==redzone ERROR: memory-leak' "$nerr"; then
   pass "non-matching suppression leaves leak reported"
 else
   bad "non-matching suppression leaves leak reported"; cat "$nerr"
+fi
+
+# 6. Output is clean (no ANSI escapes) when stderr isn't a TTY (e.g. piped).
+cerr="$TMP/ho.color.err"
+run_capture "$TMP/ho" "$cerr" >/dev/null
+if grep -q $'\x1b' "$cerr"; then
+  bad "no color when piped (default)"
+else
+  pass "no color when piped (default)"
+fi
+
+# 7. REDZONE_COLOR=always forces ANSI escapes even when piped.
+aerr="$TMP/ho.always.err"
+REDZONE_COLOR=always bash -c '"$0" >/dev/null 2>"$1"' "$TMP/ho" "$aerr" 2>/dev/null
+if grep -q $'\x1b' "$aerr"; then
+  pass "REDZONE_COLOR=always emits color"
+else
+  bad "REDZONE_COLOR=always emits color"
+fi
+
+# 8. Leaks from one site are collapsed into a single counted line.
+derr="$TMP/mleak.err"
+code="$(run_capture "$TMP/mleak" "$derr")"
+sites="$(grep -c 'allocation(s).*byte(s).*at ' "$derr")"
+if [[ "$code" -ne 0 ]] && grep -q '5 allocation(s)' "$derr" && [[ "$sites" -eq 1 ]]; then
+  pass "leaks deduplicated by allocation site"
+else
+  bad "leaks deduplicated by allocation site (site lines=$sites)"; cat "$derr"
 fi
 
 echo

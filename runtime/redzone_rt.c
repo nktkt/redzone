@@ -39,6 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h> // isatty, for color auto-detection
 
 #define REDZONE_SIZE 16 // guard bytes on each side of an allocation
 
@@ -244,6 +245,38 @@ static Block *block_from_user_ptr(void *ptr) {
 }
 
 //===----------------------------------------------------------------------===//
+// Color
+//===----------------------------------------------------------------------===//
+//
+// ANSI color for text reports. Auto-on when stderr is a TTY; forced by
+// REDZONE_COLOR=always|never and disabled by the NO_COLOR convention. col()
+// returns the escape code when color is on, or "" otherwise, so call sites
+// splice it unconditionally -- a non-TTY (CI log, pipe, test redirect) gets
+// clean, code-free text.
+#define RZ_RED "\033[1;31m"  // error header
+#define RZ_CYAN "\033[36m"   // source locations
+#define RZ_DIM "\033[2m"     // secondary detail (alloc site, stack frames)
+#define RZ_RESET "\033[0m"
+
+static int rz_color_on(void) {
+  static int c = -1;
+  if (c < 0) {
+    const char *e = getenv("REDZONE_COLOR");
+    if (e && strcmp(e, "always") == 0)
+      c = 1;
+    else if (e && strcmp(e, "never") == 0)
+      c = 0;
+    else if (getenv("NO_COLOR"))
+      c = 0;
+    else
+      c = isatty(STDERR_FILENO) ? 1 : 0;
+  }
+  return c;
+}
+
+static const char *col(const char *code) { return rz_color_on() ? code : ""; }
+
+//===----------------------------------------------------------------------===//
 // Stack traces
 //===----------------------------------------------------------------------===//
 //
@@ -293,9 +326,11 @@ static void print_trace_text(FILE *o) {
   if (!syms)
     return;
   if (start < n)
-    fputs("    #stack (most recent call first):\n", o);
+    fprintf(o, "    %s#stack (most recent call first):%s\n", col(RZ_DIM),
+            col(RZ_RESET));
   for (int i = start, f = 0; i < n; i++, f++)
-    fprintf(o, "    #%d %s\n", f, trim_frame(syms[i]));
+    fprintf(o, "    %s#%d %s%s\n", col(RZ_DIM), f, trim_frame(syms[i]),
+            col(RZ_RESET));
   free(syms);
 }
 
@@ -456,7 +491,8 @@ static void report_free_error(const char *kind, const void *ptr) {
     fd.with_stack = 1;
     emit_finding_and_abort(&fd);
   }
-  fprintf(stderr, "==redzone ERROR: %s of %p\n", kind, ptr);
+  fprintf(stderr, "%s==redzone ERROR: %s%s of %p\n", col(RZ_RED), kind,
+          col(RZ_RESET), ptr);
   print_trace_text(stderr);
   abort();
 }
@@ -707,11 +743,11 @@ static void report(const char *kind, const void *addr, size_t size, int is_write
   void *hi = (void *)(b->user_addr + b->user_size);
   const char *freed = b->freed ? " (freed)" : "";
 
-  fprintf(stderr, "==redzone ERROR: %s\n", kind);
+  fprintf(stderr, "%s==redzone ERROR: %s%s\n", col(RZ_RED), kind, col(RZ_RESET));
   fprintf(stderr, "  %s of size %zu at %p\n", is_write ? "WRITE" : "READ", size,
           addr);
   if (file)
-    fprintf(stderr, "    at %s:%d\n", file, line);
+    fprintf(stderr, "    at %s%s:%d%s\n", col(RZ_CYAN), file, line, col(RZ_RESET));
   print_trace_text(stderr);
 
   if (a < b->user_addr)
@@ -726,7 +762,8 @@ static void report(const char *kind, const void *addr, size_t size, int is_write
             hi, freed);
 
   if (b->alloc_file)
-    fprintf(stderr, "    allocated at %s:%d\n", b->alloc_file, b->alloc_line);
+    fprintf(stderr, "    %sallocated at %s:%d%s\n", col(RZ_DIM), b->alloc_file,
+            b->alloc_line, col(RZ_RESET));
 
   abort();
 }
@@ -745,11 +782,11 @@ static void report_simple(const char *kind, const void *addr, size_t size,
     fd.with_stack = 1;
     emit_finding_and_abort(&fd);
   }
-  fprintf(stderr, "==redzone ERROR: %s\n", kind);
+  fprintf(stderr, "%s==redzone ERROR: %s%s\n", col(RZ_RED), kind, col(RZ_RESET));
   fprintf(stderr, "  %s of size %zu at %p\n", is_write ? "WRITE" : "READ", size,
           addr);
   if (file)
-    fprintf(stderr, "    at %s:%d\n", file, line);
+    fprintf(stderr, "    at %s%s:%d%s\n", col(RZ_CYAN), file, line, col(RZ_RESET));
   print_trace_text(stderr);
   abort();
 }
@@ -920,19 +957,44 @@ static void report_leaks(void) {
     _Exit(1);
   }
 
-  fprintf(stderr, "==redzone ERROR: memory-leak\n");
+  fprintf(stderr, "%s==redzone ERROR: memory-leak%s\n", col(RZ_RED),
+          col(RZ_RESET));
   fprintf(stderr, "  %zu allocation(s) never freed, %zu byte(s) total\n", leaked,
           bytes);
+
+  // Collapse leaks by allocation site, so a loop that leaks N blocks prints one
+  // line (with a count) instead of N. `done` marks blocks already folded into an
+  // earlier site's line; if it can't be allocated we fall back to one line each.
+  char *done = (char *)calloc(g_count ? g_count : 1, 1);
   for (size_t i = 0; i < g_count; i++) {
     Block *b = &g_blocks[i];
-    if (!is_unsuppressed_leak(b))
+    if (!is_unsuppressed_leak(b) || (done && done[i]))
       continue;
+    size_t count = 1, site_bytes = b->user_size;
+    if (done)
+      for (size_t j = i + 1; j < g_count; j++) {
+        Block *o = &g_blocks[j];
+        if (done[j] || !is_unsuppressed_leak(o))
+          continue;
+        int same = o->alloc_line == b->alloc_line &&
+                   ((o->alloc_file == b->alloc_file) ||
+                    (o->alloc_file && b->alloc_file &&
+                     strcmp(o->alloc_file, b->alloc_file) == 0));
+        if (same) {
+          count++;
+          site_bytes += o->user_size;
+          done[j] = 1;
+        }
+      }
     if (b->alloc_file)
-      fprintf(stderr, "  %zu byte(s) allocated at %s:%d\n", b->user_size,
-              b->alloc_file, b->alloc_line);
+      fprintf(stderr, "  %zu allocation(s), %zu byte(s), at %s%s:%d%s\n", count,
+              site_bytes, col(RZ_CYAN), b->alloc_file, b->alloc_line,
+              col(RZ_RESET));
     else
-      fprintf(stderr, "  %zu byte(s) (unknown allocation site)\n", b->user_size);
+      fprintf(stderr, "  %zu allocation(s), %zu byte(s) (unknown allocation site)\n",
+              count, site_bytes);
   }
+  free(done);
 
   fflush(NULL); // flush the program's own output before forcing the exit code
   _Exit(1);     // signal the leak via a nonzero status

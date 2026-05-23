@@ -131,6 +131,11 @@ Traces are captured only when an error is detected, so they add no runtime cost
 to clean code. In JSON output each finding gains a `"stack"` array. Frames are
 symbolized in-process (function names + offsets); C++ names are left mangled.
 
+Reports are **colorized** when stderr is a terminal. Color is disabled when the
+output is piped or redirected (so logs and CI stay clean), honors the
+[`NO_COLOR`](https://no-color.org/) convention, and can be forced either way with
+`REDZONE_COLOR=always|never`.
+
 ## Suppressions
 
 Known, intentional **leaks** (e.g. a global cache never freed) can be silenced
@@ -149,6 +154,10 @@ Each `leak:<substring>` rule matches a leak whose allocation file contains the
 substring; a leak matching any rule is not reported, and a run whose every leak
 is suppressed exits cleanly. Only leaks are suppressible by design — a buffer
 overflow or use-after-free is a real bug, so redzone always reports it.
+
+In the text leak report, leaks from the **same allocation site are collapsed**
+into one line with a count (so a loop that leaks 10 000 blocks prints one line,
+not 10 000); JSON/SARIF still list every leaked block for tooling.
 
 ## Roadmap
 
@@ -204,8 +213,9 @@ and **memory leaks** across the full C/C++ allocator surface —
 **symbolized stack trace** (plus the allocation site for heap bugs). The
 per-access check uses **shadow memory** (O(1)). Globals are covered whether
 static/internal or external (cross-TU), and the runtime is **thread-safe** (safe
-to use in multithreaded programs). It ships a `redzone` CLI, text/JSON/SARIF
-output, **leak suppressions**, CMake & Make integration, and a 25-case suite plus
+to use in multithreaded programs). Reports are **colorized** (TTY-aware) with
+**deduplicated** leak summaries. It ships a `redzone` CLI, text/JSON/SARIF
+output, **leak suppressions**, CMake & Make integration, and a 26-case suite plus
 format, cross-TU, report, integration, and performance-regression checks in CI.
 Remaining gaps: *detecting* data races, C++17 aligned `new`/`delete`, and
 underflow of an external global.
