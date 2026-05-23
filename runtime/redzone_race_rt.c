@@ -236,6 +236,46 @@ int rz_rt_pthread_mutex_unlock(pthread_mutex_t *mutex) {
   return pthread_mutex_unlock(mutex);
 }
 
+int rz_rt_pthread_mutex_trylock(pthread_mutex_t *mutex) {
+  int rc = pthread_mutex_trylock(mutex);
+  if (rc == 0)
+    rz_rt_mutex_lock(mutex); // only an acquire when we actually got the lock
+  return rc;
+}
+
+// rwlocks reuse the mutex sync primitives (acquire on lock, release on unlock),
+// keyed by the rwlock's address. See the header for why this is sound.
+int rz_rt_pthread_rwlock_rdlock(pthread_rwlock_t *rwlock) {
+  int rc = pthread_rwlock_rdlock(rwlock);
+  rz_rt_mutex_lock(rwlock);
+  return rc;
+}
+
+int rz_rt_pthread_rwlock_wrlock(pthread_rwlock_t *rwlock) {
+  int rc = pthread_rwlock_wrlock(rwlock);
+  rz_rt_mutex_lock(rwlock);
+  return rc;
+}
+
+int rz_rt_pthread_rwlock_tryrdlock(pthread_rwlock_t *rwlock) {
+  int rc = pthread_rwlock_tryrdlock(rwlock);
+  if (rc == 0)
+    rz_rt_mutex_lock(rwlock);
+  return rc;
+}
+
+int rz_rt_pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock) {
+  int rc = pthread_rwlock_trywrlock(rwlock);
+  if (rc == 0)
+    rz_rt_mutex_lock(rwlock);
+  return rc;
+}
+
+int rz_rt_pthread_rwlock_unlock(pthread_rwlock_t *rwlock) {
+  rz_rt_mutex_unlock(rwlock); // publish before releasing (read or write unlock)
+  return pthread_rwlock_unlock(rwlock);
+}
+
 static void access_range(uintptr_t addr, size_t size, int is_write) {
   rz_thread *s = self();
   if (!s)

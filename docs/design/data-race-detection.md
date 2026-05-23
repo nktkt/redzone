@@ -165,13 +165,19 @@ but little else.
    ways: the runtime alone with **real pthreads**
    (`scripts/test_race_runtime.sh`, 25× — mutex-protected → 0, create/join handoff
    → 0, unsynchronized → ≥1) and **end to end** through the pass
-   (`scripts/test_race_e2e.sh` — a racy program is flagged, a mutex-protected one
-   runs clean, both run repeatedly since happens-before is timing-independent). It
-   detects write-write and read-write races. (Deliberately incomplete: only
-   `pthread_mutex_*` + create/join are modeled, so it runs opt-in and its misses
-   are known.)
-2. **More cells + more primitives** — multiple shadow cells; rwlocks, condvars,
-   barriers, semaphores, `pthread_once`.
+   (`scripts/test_race_e2e.sh` — a racy program is flagged, correctly
+   synchronized ones run clean, all run repeatedly since happens-before is
+   timing-independent). It detects write-write and read-write races. (Runs opt-in;
+   its misses are known.)
+2. **More primitives** (in progress) — modeled so far: `pthread_create`/`join`,
+   `pthread_mutex_lock`/`unlock`/`trylock`, and reader/writer locks
+   (`pthread_rwlock_rdlock`/`wrlock`/`tryrdlock`/`trywrlock`/`unlock`). An rwlock
+   is treated as an acquire/release on one sync object, which over-approximates
+   ordering between concurrent readers (harmless — read/read never races) while
+   capturing every real reader↔writer edge, so it stays free of false positives.
+   Still ahead: condition variables, barriers, semaphores, and `pthread_once`
+   (covered by `scripts/test_race_e2e.sh`, cases for each primitive). Also:
+   multiple shadow cells per location.
 3. **Atomics with memory orders.**
 4. **Performance** — tune shadow layout and the per-access path.
 
