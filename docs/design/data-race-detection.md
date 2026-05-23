@@ -1,9 +1,13 @@
 # Design note: data-race detection (Horizon 5)
 
-Status: **proposed — design only, not implemented.** This sketches how a
-data-race detector would be built on redzone's existing infrastructure, the
-algorithm choice, the costs, and a phased plan. It is a large, separate
-sub-project; nothing here ships yet.
+Status: **in progress — engine core only.** This note covers the design,
+algorithm choice, costs, and phasing. The correctness-critical happens-before
+*engine* (vector clocks + the race decision) is implemented and unit-tested in
+isolation — `runtime/redzone_race.{c,h}`, exercised by
+`scripts/test_race_engine.sh` in CI — but it is **not yet wired into anything**:
+the per-thread clocks (TLS), synchronization interception, per-location shadow,
+and pass instrumentation remain unbuilt. A normal redzone build is unaffected;
+the detector is a large, separate sub-project still mostly ahead.
 
 ## Goal
 
@@ -125,11 +129,16 @@ but little else.
 
 ## Phasing
 
-1. **Core happens-before MVP** — instrument loads/stores; intercept only
-   `pthread_mutex_lock`/`unlock` and `pthread_create`/`join`; one shadow cell per
-   8 bytes; detect write-write and read-write races. Validate on a tiny golden
-   corpus. (Deliberately incomplete: documents that other primitives aren't yet
-   modeled, so it is run opt-in and its misses are known.)
+1. **Happens-before engine** ✅ — the vector-clock algebra and the pairwise race
+   decision, decoupled from threads and storage, unit-tested deterministically
+   (`runtime/redzone_race.{c,h}`, `scripts/test_race_engine.sh`). This is the
+   correctness-critical core; validating it in isolation de-risks everything
+   above it.
+1b. **Core happens-before MVP** (next) — drive the engine from real execution:
+   per-thread clocks in TLS; intercept `pthread_mutex_lock`/`unlock` and
+   `pthread_create`/`join`; a per-location shadow; instrument loads/stores via the
+   pass. Detect write-write and read-write races. (Deliberately incomplete: other
+   primitives aren't modeled yet, so it runs opt-in and its misses are known.)
 2. **More cells + more primitives** — multiple shadow cells; rwlocks, condvars,
    barriers, semaphores, `pthread_once`.
 3. **Atomics with memory orders.**

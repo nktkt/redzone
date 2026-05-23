@@ -259,8 +259,8 @@ incremental builds and compiler caches (**ccache** and **sccache**) work — see
 output, **leak suppressions**, instrumentation **opt-outs** (a
 `REDZONE_NO_INSTRUMENT` attribute and a `REDZONE_IGNORELIST` file), CMake & Make
 integration, and a 28-case suite plus format, cross-TU, report, opt-out,
-ignore-list, determinism, ccache, sccache, integration, and
-performance-regression checks in CI. Remaining gaps: *detecting* data races and
+ignore-list, determinism, ccache, sccache, integration, performance-regression,
+and race-engine checks in CI. Remaining gaps: *detecting* data races and
 underflow of an external global.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,

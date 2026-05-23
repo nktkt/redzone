@@ -58,6 +58,12 @@ jobs:
         # the same overflow is caught without a rule and allowed when one matches.
         run: ./scripts/test_ignorelist.sh
 
+      - name: Race-engine unit test
+        # The happens-before core of the (in-progress) data-race detector:
+        # deterministic vector-clock scenarios, no threads. See
+        # docs/design/data-race-detection.md.
+        run: ./scripts/test_race_engine.sh
+
       - name: Reproducible-build (determinism) check
         # Instrumenting the same source twice must yield byte-identical objects --
         # the prerequisite for compiler caches and reproducible builds.
