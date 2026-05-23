@@ -15,8 +15,11 @@
 //      fixed-offset mmap that production ASan uses; see docs/design).
 //
 //   2. ALLOCATION TABLE (the slow path). Records each block's size, bounds and
-//      allocation site. Consulted only by __redzone_free and, on a violation,
-//      to produce a rich report -- so the common path never walks it.
+//      allocation site. free()/realloc() reach their block in O(1) via a header
+//      stashed in the block's left red zone (an index into this table); the
+//      table is scanned linearly only to produce a rich report on a violation,
+//      or to classify an interior/foreign pointer -- so the common path never
+//      walks it.
 //
 // IMPORTANT: compile this runtime WITHOUT the redzone pass, or its own
 // malloc/free below would be rewritten and recurse forever.
@@ -63,6 +66,23 @@ static Block *g_blocks = NULL;
 static size_t g_count = 0;
 static size_t g_cap = 0;
 
+// O(1) back-reference stashed in each heap block's left red zone, so free() and
+// realloc() can recover the block's metadata directly from the user pointer
+// instead of scanning g_blocks. We store the *index* (stable across the realloc
+// that grows g_blocks), not a Block pointer (which the realloc would dangle).
+#define RZ_HEADER_MAGIC ((uintptr_t)0x7265647A6F6E6521ULL) // "redzone!"
+
+typedef struct {
+  uintptr_t magic; // RZ_HEADER_MAGIC when this is one of our headers
+  size_t index;    // index into g_blocks
+} Header;
+
+// The header lives in the left red zone, so the red zone must be big enough.
+_Static_assert(REDZONE_SIZE >= sizeof(Header), "red zone too small for header");
+
+// Linear scan over every recorded block. O(n), so it must stay off the hot
+// path: it is reached only on the error/slow path (a flagged access in
+// __redzone_check, or an interior/foreign pointer passed to free/realloc).
 static Block *find_block(uintptr_t addr) {
   for (size_t i = 0; i < g_count; i++) {
     Block *b = &g_blocks[i];
@@ -72,9 +92,10 @@ static Block *find_block(uintptr_t addr) {
   return NULL;
 }
 
-static void record_block(uintptr_t real_base, size_t total_size,
-                         uintptr_t user_addr, size_t user_size,
-                         const char *file, int line) {
+// Returns the block's index in g_blocks.
+static size_t record_block(uintptr_t real_base, size_t total_size,
+                           uintptr_t user_addr, size_t user_size,
+                           const char *file, int line) {
   if (g_count == g_cap) {
     size_t new_cap = g_cap ? g_cap * 2 : 64;
     Block *n = (Block *)realloc(g_blocks, new_cap * sizeof(Block));
@@ -85,7 +106,8 @@ static void record_block(uintptr_t real_base, size_t total_size,
     g_blocks = n;
     g_cap = new_cap;
   }
-  Block *b = &g_blocks[g_count++];
+  size_t idx = g_count++;
+  Block *b = &g_blocks[idx];
   b->real_base = real_base;
   b->total_size = total_size;
   b->user_addr = user_addr;
@@ -93,6 +115,7 @@ static void record_block(uintptr_t real_base, size_t total_size,
   b->freed = 0;
   b->alloc_file = file;
   b->alloc_line = line;
+  return idx;
 }
 
 //===----------------------------------------------------------------------===//
@@ -151,11 +174,21 @@ static void set_shadow_byte(uintptr_t app, int8_t val) {
 }
 
 // Set the shadow for every aligned 8-byte chunk overlapping [start, start+len).
+// One shadow byte per chunk, contiguous in the direct-mapped shadow, so this is
+// a single memset -- not a per-chunk loop. This runs on the allocator hot path
+// (poison/carve on malloc, poison-as-freed on free), so keeping it cheap matters.
 static void set_shadow_range(uintptr_t start, size_t len, int8_t val) {
-  uintptr_t a = start & ~(uintptr_t)7;            // round down
-  uintptr_t end = (start + len + 7) & ~(uintptr_t)7; // round up
-  for (; a < end; a += 8)
-    set_shadow_byte(a, val);
+  if (len == 0)
+    return;
+  if (!__redzone_shadow_base)
+    shadow_init();
+  uintptr_t lo = (start & ~(uintptr_t)7) >> SHADOW_SCALE;        // first chunk
+  uintptr_t hi = ((start + len + 7) & ~(uintptr_t)7) >> SHADOW_SCALE; // past end
+  if (lo >= SHADOW_BYTES)
+    return; // wholly beyond the covered range -> untracked
+  if (hi > SHADOW_BYTES)
+    hi = SHADOW_BYTES;
+  memset(__redzone_shadow_base + lo, (unsigned char)val, hi - lo);
 }
 
 // Is the byte at `app` off-limits?
@@ -166,6 +199,27 @@ static int byte_poisoned(uintptr_t app) {
   if (sv < 0)
     return 1; // poisoned
   return (int)(app & 7) >= sv; // partial: only first `sv` bytes are valid
+}
+
+// Recover a block from a user pointer in O(1) via the header we stashed in its
+// left red zone. Returns NULL unless `ptr` is exactly the start of one of our
+// live (or quarantined) heap blocks -- callers fall back to find_block() to tell
+// an interior pointer (invalid-free) from a foreign one.
+//
+// The header sits in poisoned red-zone memory just below the user region. We
+// gate the header read on the shadow (always safe to read) being RZ_POISON
+// there, so free() of a foreign pointer never dereferences unmapped memory.
+static Block *block_from_user_ptr(void *ptr) {
+  uintptr_t u = (uintptr_t)ptr;
+  if (u < sizeof(Header))
+    return NULL;
+  if (shadow_load(u - 8) != RZ_POISON)
+    return NULL; // not immediately above one of our heap red zones
+  const Header *h = (const Header *)(u - sizeof(Header));
+  if (h->magic != RZ_HEADER_MAGIC || h->index >= g_count)
+    return NULL;
+  Block *b = &g_blocks[h->index];
+  return b->user_addr == u ? b : NULL;
 }
 
 //===----------------------------------------------------------------------===//
@@ -317,7 +371,7 @@ void *__redzone_malloc(size_t size, const char *file, int line) {
   if (!base)
     return NULL;
   uintptr_t user = (uintptr_t)base + REDZONE_SIZE;
-  record_block((uintptr_t)base, total, user, size, file, line);
+  size_t idx = record_block((uintptr_t)base, total, user, size, file, line);
 
   // Poison the whole block, then carve out the addressable user region.
   set_shadow_range((uintptr_t)base, total, RZ_POISON);
@@ -327,6 +381,12 @@ void *__redzone_malloc(size_t size, const char *file, int line) {
     set_shadow_range(user, aligned, 0);
   if (rem)
     set_shadow_byte(user + aligned, (int8_t)rem);
+
+  // Stash the O(1) back-reference in the (poisoned) left red zone, right below
+  // the user region, so free()/realloc() find the block without scanning.
+  Header *h = (Header *)(user - sizeof(Header));
+  h->magic = RZ_HEADER_MAGIC;
+  h->index = idx;
 
   return (void *)user;
 }
@@ -351,7 +411,9 @@ void *__redzone_realloc(void *ptr, size_t size, const char *file, int line) {
   void *np = __redzone_malloc(size, file, line);
   if (!np)
     return NULL;
-  Block *old = find_block((uintptr_t)ptr);
+  Block *old = block_from_user_ptr(ptr);
+  if (!old)
+    old = find_block((uintptr_t)ptr); // interior pointer: fall back to scanning
   if (old && !old->freed) {
     size_t copy = old->user_size < size ? old->user_size : size;
     memcpy(np, ptr, copy);
@@ -363,11 +425,16 @@ void *__redzone_realloc(void *ptr, size_t size, const char *file, int line) {
 void __redzone_free(void *ptr) {
   if (!ptr)
     return;
-  Block *b = find_block((uintptr_t)ptr);
-  if (!b)
-    return; // not one of ours; ignore
-  if ((uintptr_t)ptr != b->user_addr)
-    report_free_error("invalid-free", ptr);
+  Block *b = block_from_user_ptr(ptr); // O(1): the steady-state path
+  if (!b) {
+    // Not the start of one of our blocks. Distinguish an interior pointer into
+    // one of ours (invalid-free) from a foreign pointer (ignore). This scan is
+    // O(n), but it only runs on the error path -- never in steady state.
+    b = find_block((uintptr_t)ptr);
+    if (!b)
+      return; // not one of ours; ignore
+    report_free_error("invalid-free", ptr); // ours, but not at the user base
+  }
   if (b->freed)
     report_free_error("double-free", ptr);
   b->freed = 1; // quarantine: keep metadata so use-after-free stays detectable

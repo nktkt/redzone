@@ -161,9 +161,10 @@ format and integration checks in CI. Remaining gaps: external (non-static)
 globals, `aligned_alloc` / C++ `new`/`delete`, and threading.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
-so compute-bound code runs at ~1.8× and load-bound code far below its earlier
-cost (see **[docs/benchmarks.md](docs/benchmarks.md)**). The allocator path is the
-next optimization target.
+so compute-bound code runs at ~1.6×, and the allocator path is **O(1)** per
+`malloc`/`free` (each block finds its metadata via a header in its own red zone,
+no scanning), so allocation-heavy code dropped from ~800× to ~9× (see
+**[docs/benchmarks.md](docs/benchmarks.md)**).
 
 ## License
 

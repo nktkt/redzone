@@ -21,8 +21,8 @@ compiles the runtime once, builds every `bench/*.c` two ways, runs the
 correctness check, and prints the results table. All build/run artifacts go to a
 `mktemp -d` directory that is removed on exit, so nothing is left in the repo.
 
-The instrumented `alloc_churn` run is intentionally slow (it stresses the
-allocator path the hardest), so the full suite takes roughly a minute.
+`alloc_churn` stresses the allocator path the hardest; before the O(1) free
+work (v0.12) it dominated the suite's wall time.
 
 ## Methodology
 
@@ -74,59 +74,68 @@ Measured on this machine:
 - **Compiler:** Homebrew clang 22.1.4 (LLVM 22)
 - **Command:** `./scripts/bench.sh` (min of K runs, `-O2` both)
 
-Current (v0.11 — inlined fast-path check over a direct-mapped shadow):
+Current (v0.12 — O(1) allocator metadata lookup):
 
 | benchmark    | baseline (ms) | instrumented (ms) | slowdown | correct |
 |--------------|--------------:|------------------:|---------:|:-------:|
-| compute      |         144.5 |             258.2 |     1.8x |   OK    |
-| gather       |          23.3 |             803.0 |    34.5x |   OK    |
-| alloc_churn  |           2.8 |            2253.9 |   805.0x |   OK    |
+| compute      |         143.9 |             220.7 |     1.6x |   OK    |
+| gather       |          22.6 |             397.4 |    17.7x |   OK    |
+| alloc_churn  |           2.9 |              27.1 |     9.4x |   OK    |
 
 These are best-case wall times; ratios wobble run-to-run (most for `alloc_churn`,
 whose baseline is only a few ms — a warm allocator churns tiny blocks almost for
-free — so its absolute instrumented cost is the stabler signal).
+free — so its absolute instrumented cost, ~27 ms, is the stabler signal).
 
 ### How we got here
 
-| benchmark | hashed (v0.9) | direct-mapped (v0.10) | inlined (v0.11) |
-|---|--:|--:|--:|
-| compute | 13.9x | ~11x | **1.8x** |
-| gather | 143x | ~123x | **34.5x** |
-| alloc_churn | ~916x | ~780x | **805x** |
+| benchmark | hashed (v0.9) | direct-mapped (v0.10) | inlined (v0.11) | O(1) free (v0.12) |
+|---|--:|--:|--:|--:|
+| compute | 13.9x | ~11x | 1.8x | **1.6x** |
+| gather | 143x | ~123x | 34.5x | **17.7x** |
+| alloc_churn | ~916x | ~780x | 805x | **9.4x** |
 
 - **v0.10** replaced the hashed shadow with a direct-mapped one
   (`base + (addr>>3)`): a modest win, confirming the per-access *function call*,
   not the lookup, dominated.
 - **v0.11** inlined the fast-path check (load the shadow byte, compare, branch;
   call the slow path only on a flagged byte). Compute-bound code dropped to ~1.8x
-  — essentially ASan territory — and load-bound `gather` improved ~4x.
-  `alloc_churn` barely moved: its cost is the allocator path
-  (`__redzone_malloc`/`free` + poisoning), not per-access checks — the next thing
-  to optimize.
+  — essentially ASan territory.
+- **v0.12** made the allocator path O(1). `__redzone_free`/`realloc` previously
+  located a block with an O(n) linear scan of the allocation table (which never
+  shrinks, since freed blocks are quarantined), so a loop of N malloc/free pairs
+  cost O(N²). Now each block stashes the index of its metadata in a header inside
+  its own left red zone, so free recovers it in O(1) from the user pointer (the
+  scan survives only on the error path, to classify interior/foreign pointers).
+  `set_shadow_range` also became a single `memset` over the contiguous shadow
+  instead of a per-chunk loop. `alloc_churn` fell **805x → ~9x** (instrumented
+  wall time 2254 ms → 27 ms); `gather`, which also frees once per outer
+  iteration, roughly halved (34.5x → 17.7x) as its free path stopped scanning —
+  leaving it a near-pure measure of per-access overhead.
 
 ## Interpretation
 
 The spread across benchmarks is the headline: overhead tracks **memory-access
 and allocation density**, not raw CPU work.
 
-- **`compute` (~1.8x)** is compute-bound: register-only hashing with one
+- **`compute` (~1.6x)** is compute-bound: register-only hashing with one
   instrumented access per outer iteration. With the check inlined there is almost
   nothing to pay, so it sits in AddressSanitizer's ~2-3x range.
-- **`gather` (~35x)** is the worst case: a tight dependent-gather loop where an
+- **`gather` (~18x)** is the worst case: a tight dependent-gather loop where an
   inlined shadow load precedes essentially every (latency-bound) data load, so
-  the extra loads serialize. Real code is rarely this pointer-chasing-heavy.
-- **`alloc_churn` (hundreds-to-~800x)** hammers the allocator: each
-  `malloc`/`free` goes through the runtime's red-zone setup/teardown and shadow
-  poisoning, which dwarfs the few-nanosecond warm allocator fast path. The
-  inlined access check doesn't touch this path — which is why it's the next
-  optimization target.
+  the extra loads serialize. Real code is rarely this pointer-chasing-heavy. Now
+  that free is O(1), this is close to a pure per-access measurement.
+- **`alloc_churn` (~9x)** hammers the allocator: each `malloc`/`free` goes
+  through the runtime's red-zone setup/teardown and shadow poisoning. With the
+  metadata lookup now O(1) (v0.12) this is bounded per-operation work rather than
+  the former O(N²) blow-up; the residual is the fixed cost of red-zone
+  bookkeeping over a warm allocator's few-nanosecond fast path.
 
 The remaining per-access cost is now just the inlined shadow load + compare; the
 out-of-line call to `__redzone_check` is taken only when a byte is flagged (and
-re-validated there before reporting).
+re-validated there before reporting). The allocator path is O(1) per call.
 
-Both Horizon 4 shadow/check steps are now in place (direct-mapped shadow in
-v0.10, inlined check in v0.11), bringing compute-bound code to ~2x — ASan
-territory. The remaining high-overhead cases point at the next work: speeding up
-the **allocator path** (`alloc_churn`) and, optionally, **skipping
-provably-safe accesses** to thin out checks in load-heavy loops (`gather`).
+The Horizon 4 shadow/check steps (direct-mapped shadow in v0.10, inlined check
+in v0.11) brought compute-bound code to ~2x — ASan territory — and v0.12's O(1)
+allocator metadata removed the allocator-path blow-up. The remaining headroom is
+in the load-heavy `gather` case, which points at the next optional work:
+**skipping provably-safe accesses** to thin out redundant checks.
