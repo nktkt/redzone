@@ -14,6 +14,7 @@ programs are in [`bench/`](../bench).
 ./scripts/bench.sh        # min of 5 runs per binary (default)
 ./scripts/bench.sh 9      # min of 9 runs
 BENCH_RUNS=3 ./scripts/bench.sh
+./scripts/bench.sh --check    # CI regression gate (see "Regression gate" below)
 ```
 
 The script builds the pass plugin if `build/libRedzonePass.so` is missing,
@@ -154,3 +155,34 @@ compute-bound code to ~1.1x and roughly halved the load- and allocation-bound
 cases twice over. The remaining `gather` overhead is the cost of checking
 genuinely unprovable pointer-chasing loads; thinning it further would require
 range/loop analysis to hoist or coalesce checks (a possible future step).
+
+## Regression gate (CI)
+
+`./scripts/bench.sh --check` turns the harness into a CI gate. Per benchmark it
+asserts two thresholds (and keeps the stdout-equality correctness check),
+exiting nonzero if any is exceeded:
+
+| gate | what it guards | why it doesn't flake |
+|---|---|---|
+| **check count** ≤ budget | the static number of `__redzone_check` sites the pass emits | deterministic given the compiler — protects selective instrumentation and the inlined check (disabling either balloons the count ~10x) |
+| **slowdown** ≤ ceiling | instrumented/baseline wall-time ratio | hardware-independent (both builds run on the same machine); ceilings are deliberately loose to ride out noise |
+
+The thresholds are tripwires for *order-of-magnitude* regressions, not precise
+targets, so they survive the noise of a shared CI runner while still catching the
+two failure modes that matter:
+
+| benchmark | check budget | slowdown ceiling | current |
+|---|--:|--:|--:|
+| compute | 16 | 5x | 5 checks, ~1.1x |
+| gather | 16 | 40x | 5 checks, ~9.5x |
+| alloc_churn | 16 | 100x | 5 checks, ~7.5x |
+
+For example, disabling selective instrumentation would push `compute` to 62
+checks (> 16), and reintroducing the O(N²) allocator scan would send
+`alloc_churn` past 100x — either trips the gate. The check-count gate is the
+primary, deterministic guard; the slowdown ceilings are loose secondary
+tripwires. `compute`'s ratio is the most stable (long baseline), so its tighter
+5x ceiling catches a regressed per-access check (e.g. un-inlining, which would
+also keep the count unchanged); `gather` and `alloc_churn` get wide ceilings
+because their short baselines make their ratios the noisiest across machines. CI
+runs this as the final step of the workflow, reusing the already-built plugin.

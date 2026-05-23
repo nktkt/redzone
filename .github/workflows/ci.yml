@@ -81,3 +81,11 @@ jobs:
           check "make-example" ./integration/make-example/demo
 
           exit "$fail"
+
+      - name: Performance regression check
+        # Reuses the pass plugin built by the test-suite step. bench.sh --check
+        # asserts, per benchmark, that the static check count stays within budget
+        # and the runtime slowdown stays under a (deliberately loose) ceiling, so
+        # this catches order-of-magnitude regressions without flaking on CI noise.
+        # See docs/benchmarks.md for the thresholds and rationale.
+        run: ./scripts/bench.sh --check

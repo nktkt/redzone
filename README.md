@@ -157,8 +157,9 @@ and **global-buffer-overflow**, **use-after-free**, **double-free**,
 reporting the faulting `file:line` (plus the allocation site for heap bugs). The
 per-access check uses **shadow memory** (O(1)). It ships a `redzone` CLI,
 text/JSON/SARIF output, CMake & Make integration, and a 16-case suite plus
-format and integration checks in CI. Remaining gaps: external (non-static)
-globals, `aligned_alloc` / C++ `new`/`delete`, and threading.
+format, integration, and performance-regression checks in CI. Remaining gaps:
+external (non-static) globals, `aligned_alloc` / C++ `new`/`delete`, and
+threading.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
 the allocator path is **O(1)** per `malloc`/`free` (each block finds its metadata

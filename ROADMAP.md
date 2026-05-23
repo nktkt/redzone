@@ -127,7 +127,8 @@ Run alongside every horizon, not in sequence.
   false-positive / false-negative rates; differential testing against real
   AddressSanitizer.
 - ✅ **Benchmarking** — `scripts/bench.sh` measures instrumented-vs-baseline
-  overhead (`docs/benchmarks.md`); baseline captured. Wiring it into CI later.
+  overhead (`docs/benchmarks.md`); `--check` mode runs in CI as a regression gate
+  (static check-count budgets + loose slowdown ceilings).
 - **Release engineering** — CI/CD, prebuilt binaries, packaging (Homebrew, apt).
 - **Security & hardening** — the tool itself must be robust against the inputs
   it analyzes.
@@ -161,9 +162,10 @@ Run alongside every horizon, not in sequence.
 - **Now (Horizon 4):** **direct-mapped shadow** (v0.10), **inlined fast-path
   check** (v0.11), **O(1) allocator metadata** (v0.12), and **selective
   instrumentation** (v0.13) done — compute-bound overhead fell ~14x → ~1.1x and
-  the allocator path ~800x → ~7.5x (`docs/benchmarks.md`). Next: cross-block /
-  loop-range check elimination (the remaining `gather` overhead), incremental
-  instrumentation, and external globals / `aligned_alloc` / C++ `new`/`delete`.
+  the allocator path ~800x → ~7.5x (`docs/benchmarks.md`), with a `bench.sh
+  --check` regression gate now in CI. Next: cross-block / loop-range check
+  elimination (the remaining `gather` overhead), incremental instrumentation, and
+  external globals / `aligned_alloc` / C++ `new`/`delete`.
 - **Also deferred:** external (non-static) globals, `aligned_alloc` / C++
   `new`/`delete`, Bazel.
 - **Deferred Horizon 2:** global buffer overflows; `aligned_alloc`/`new`/`delete`;
