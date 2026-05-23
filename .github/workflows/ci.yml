@@ -52,7 +52,12 @@ jobs:
           check() {
             label="$1"; shift
             err="$(mktemp)"
-            "$@" >/dev/null 2>"$err"; ec=$?
+            # The demo aborts (SIGABRT) on purpose. The default `run:` shell is
+            # `bash -e`, so capture the status via `|| ec=$?` (an || list is
+            # exempt from errexit) -- a bare `; ec=$?` would let the abort kill
+            # the step before the status is read.
+            ec=0
+            "$@" >/dev/null 2>"$err" || ec=$?
             if [ "$ec" -ne 0 ] && grep -qF "$EXPECT" "$err"; then
               echo "PASS: $label (exit=$ec, found '$EXPECT')"
             else
