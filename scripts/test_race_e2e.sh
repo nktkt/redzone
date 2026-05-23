@@ -18,6 +18,9 @@ LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || llvm-config --prefix)"
 CLANG="$LLVM_PREFIX/bin/clang"
 OPT="$LLVM_PREFIX/bin/opt"
 PLUGIN="build/libRedzonePass.so"
+# So the `redzone` CLI (which calls `clang`/`opt` from PATH) finds Homebrew LLVM,
+# not Apple clang (which cannot load the plugin). Keg-only, so prepend it.
+export PATH="$LLVM_PREFIX/bin:$PATH"
 
 # program (under examples/)        expected: race | clean
 CASES=(
@@ -113,6 +116,26 @@ for entry in "${CASES[@]}"; do
     fail=1
   fi
 done
+
+# --- CLI smoke test: the `redzone run --race` wrapper, end to end. ---
+cli_out="$("$ROOT/scripts/redzone" run --race examples/race_data_race.c \
+  -o "$TMP/cli_racy" 2>&1)" && cli_code=0 || cli_code=$?
+if [[ "$cli_code" -ne 0 ]] && grep -qF "data race" <<<"$cli_out"; then
+  echo "PASS  CLI run --race          (racy program flagged)"
+else
+  echo "FAIL  CLI run --race          (race_data_race not flagged, exit $cli_code)"
+  echo "$cli_out"
+  fail=1
+fi
+cli_out="$("$ROOT/scripts/redzone" run --race examples/race_clean.c \
+  -o "$TMP/cli_clean" 2>&1)" && cli_code=0 || cli_code=$?
+if [[ "$cli_code" -eq 0 ]]; then
+  echo "PASS  CLI run --race          (clean program runs clean)"
+else
+  echo "FAIL  CLI run --race          (race_clean false-flagged, exit $cli_code)"
+  echo "$cli_out"
+  fail=1
+fi
 
 if [[ "$fail" -ne 0 ]]; then
   echo "race-e2e: FAILED"
