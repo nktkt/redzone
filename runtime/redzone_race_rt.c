@@ -225,6 +225,17 @@ void rz_rt_mutex_unlock(void *mutex) {
   UNLOCK();
 }
 
+int rz_rt_pthread_mutex_lock(pthread_mutex_t *mutex) {
+  int rc = pthread_mutex_lock(mutex);
+  rz_rt_mutex_lock(mutex); // record the acquire once we actually hold the lock
+  return rc;
+}
+
+int rz_rt_pthread_mutex_unlock(pthread_mutex_t *mutex) {
+  rz_rt_mutex_unlock(mutex); // publish our clock while we still hold the lock
+  return pthread_mutex_unlock(mutex);
+}
+
 static void access_range(uintptr_t addr, size_t size, int is_write) {
   rz_thread *s = self();
   if (!s)
