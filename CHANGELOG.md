@@ -9,6 +9,13 @@ development milestones that led to it (the commit history references them).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.20.0] — 2026-05-23
+
+Caching and exclusion additions on top of `0.19.0`; no runtime ABI or pass
+behavior changes for existing users. All changes are exercised in CI.
+
 ### Added
 - **sccache** compatibility, alongside ccache: instrumented compiles are
   cacheable and correct, and a versioned plugin filename busts the cache (sccache
@@ -105,5 +112,6 @@ Horizon 4 work); the per-access check is inlined over a direct-mapped shadow. Se
 Detecting data races; C++17 aligned `new`/`delete`; underflow of an external
 global; `file:line` inside stack-trace frames (offline symbolization works today).
 
+[0.20.0]: https://github.com/nktkt/redzone/releases/tag/v0.20.0
 [0.19.0]: https://github.com/nktkt/redzone/releases/tag/v0.19.0
 [0.18.0]: https://github.com/nktkt/redzone/releases/tag/v0.18.0
