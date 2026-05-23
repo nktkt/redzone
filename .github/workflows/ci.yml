@@ -12,8 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM and CMake
-        run: brew install llvm cmake
+      - name: Install LLVM, CMake, and ccache
+        run: brew install llvm cmake ccache
 
       - name: Put LLVM tools on PATH
         # Homebrew LLVM is keg-only, so its clang/opt/llvm-config aren't on PATH
@@ -47,6 +47,16 @@ jobs:
         # Asserts error reports carry a symbolized stack trace (text and JSON)
         # and that REDZONE_SUPPRESSIONS silences a matching leak.
         run: ./scripts/test_reports.sh
+
+      - name: Reproducible-build (determinism) check
+        # Instrumenting the same source twice must yield byte-identical objects --
+        # the prerequisite for compiler caches and reproducible builds.
+        run: ./scripts/test_determinism.sh
+
+      - name: ccache compatibility
+        # Instrumented compiles are cacheable and correct, and listing the plugin
+        # in CCACHE_EXTRAFILES makes a plugin rebuild bust the cache.
+        run: ./scripts/test_ccache.sh
 
       - name: Build-system integration examples
         # Exercise both the CMake and Make integration recipes end to end. The

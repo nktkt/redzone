@@ -14,6 +14,11 @@ development milestones that led to it (the commit history references them).
   frame to `func (in module) (file:line)` best-effort via `atos` (macOS) /
   `llvm-symbolizer` (elsewhere), falling back to function+offset per frame. Off by
   default, so the default trace stays fast and dependency-free.
+- **Caching & reproducible builds** ([`docs/caching.md`](docs/caching.md)):
+  instrumented output is byte-identical across builds (verified by
+  `scripts/test_determinism.sh`), and redzone works with **ccache** — list the
+  plugin in `CCACHE_EXTRAFILES` so a plugin rebuild busts the cache
+  (`scripts/test_ccache.sh`). Both run in CI.
 
 ## [0.18.0] — 2026-05-23
 

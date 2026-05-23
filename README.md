@@ -217,11 +217,13 @@ and **memory leaks** across the full C/C++ allocator surface —
 per-access check uses **shadow memory** (O(1)). Globals are covered whether
 static/internal or external (cross-TU), and the runtime is **thread-safe** (safe
 to use in multithreaded programs). Reports are **colorized** (TTY-aware) with
-**deduplicated** leak summaries. It ships a `redzone` CLI, text/JSON/SARIF
+**deduplicated** leak summaries. Instrumented output is **reproducible**, so
+incremental builds and compiler caches (**ccache**) work — see
+[docs/caching.md](docs/caching.md). It ships a `redzone` CLI, text/JSON/SARIF
 output, **leak suppressions**, CMake & Make integration, and a 26-case suite plus
-format, cross-TU, report, integration, and performance-regression checks in CI.
-Remaining gaps: *detecting* data races, C++17 aligned `new`/`delete`, and
-underflow of an external global.
+format, cross-TU, report, determinism, ccache, integration, and
+performance-regression checks in CI. Remaining gaps: *detecting* data races,
+C++17 aligned `new`/`delete`, and underflow of an external global.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
 the allocator path is **O(1)** per `malloc`/`free` (each block finds its metadata
