@@ -27,6 +27,8 @@ CASES=(
   "race_rwlock_unlocked.c:race" # locked writer + a rogue unlocked writer
   "race_trylock_clean.c:clean"  # mutual exclusion via mutex trylock
   "race_condvar_clean.c:clean"  # producer/consumer via cond_wait + timedwait
+  "race_atomic_clean.c:clean"   # release/acquire flag publishing plain data
+  "race_atomic_counter_clean.c:clean" # atomic fetch_add counter (RMW)
 )
 
 if [[ ! -f "$PLUGIN" ]]; then

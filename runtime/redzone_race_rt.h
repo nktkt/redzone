@@ -82,6 +82,15 @@ int rz_rt_pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
 int rz_rt_pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
                                  const struct timespec *abstime);
 
+// Atomic memory operations are SYNCHRONIZATION, not data races. The pass models
+// each as acquire/release on a per-location sync object (keyed by the address):
+// an atomic read acquires, an atomic write releases, a read-modify-write does
+// both. This is what keeps correct lock-free code from false-positing; relaxed
+// orderings are over-approximated as ordering, which can only ever miss a race,
+// never invent one.
+void rz_rt_atomic_acquire(const volatile void *addr);
+void rz_rt_atomic_release(const volatile void *addr);
+
 // Memory access events emitted (eventually) by the instrumentation pass. `size`
 // may span several 8-byte words; each is checked.
 void rz_rt_read(const volatile void *addr, size_t size);

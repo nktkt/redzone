@@ -295,6 +295,17 @@ int rz_rt_pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
   return rc;
 }
 
+// Atomic ops reuse the record-only sync primitives, keyed by the location's
+// address: an atomic read acquires the location's clock, an atomic write
+// publishes into it. See the header for the soundness argument.
+void rz_rt_atomic_acquire(const volatile void *addr) {
+  rz_rt_mutex_lock((void *)(uintptr_t)addr);
+}
+
+void rz_rt_atomic_release(const volatile void *addr) {
+  rz_rt_mutex_unlock((void *)(uintptr_t)addr);
+}
+
 static void access_range(uintptr_t addr, size_t size, int is_write) {
   rz_thread *s = self();
   if (!s)
