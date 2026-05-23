@@ -229,6 +229,12 @@ keep those locals in registers. Compute-bound code now runs at ~1.1× and
 allocation-heavy code at ~7.5× (down from ~800×); see
 **[docs/benchmarks.md](docs/benchmarks.md)**.
 
+## Contributing
+
+Contributions are welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)** for how to
+build, run the checks, and add a detector. Release history is in
+**[CHANGELOG.md](CHANGELOG.md)**.
+
 ## License
 
-To be decided.
+[MIT](LICENSE) © nktkt
