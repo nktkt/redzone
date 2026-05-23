@@ -182,7 +182,17 @@ but little else.
    unnamed POSIX semaphores aren't available on macOS, the CI platform). Each
    primitive has a case in `scripts/test_race_e2e.sh`. Also: multiple shadow cells
    per location.
-3. **Atomics with memory orders.**
+3. **Atomics** (initial support done) — atomic loads/stores, `atomicrmw`, and
+   `cmpxchg` are modeled as acquire/release on a per-location sync object (an
+   atomic read acquires after the op, a write releases before it, an RMW does
+   both), so correct lock-free code no longer false-positives
+   (`scripts/test_race_e2e.sh` covers a release/acquire publication and an atomic
+   counter). The release-before / acquire-after placement makes the happens-before
+   real (`release` is recorded before the store, the observing `acquire` after the
+   load). Memory orders are *over-approximated*: a `relaxed` op is treated as
+   ordering, which can only miss a race, never invent one. Still ahead: precise
+   per-order modeling and standalone fences (`atomic_thread_fence`), which are
+   currently ignored.
 4. **Performance** — tune shadow layout and the per-access path.
 
 ## Relationship to the rest of redzone

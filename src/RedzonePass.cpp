@@ -644,6 +644,10 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         M.getOrInsertFunction("rz_rt_read", VoidTy, PtrTy, I64);
     FunctionCallee RaceWrite =
         M.getOrInsertFunction("rz_rt_write", VoidTy, PtrTy, I64);
+    FunctionCallee AtomicAcquire =
+        M.getOrInsertFunction("rz_rt_atomic_acquire", VoidTy, PtrTy);
+    FunctionCallee AtomicRelease =
+        M.getOrInsertFunction("rz_rt_atomic_release", VoidTy, PtrTy);
 
     // pthread primitive -> race-runtime wrapper. The wrappers still perform the
     // real operation; they just also record the ordering edge.
@@ -676,7 +680,19 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       return nullptr;
     };
 
-    unsigned accesses = 0, syncs = 0;
+    unsigned accesses = 0, syncs = 0, atomics = 0;
+
+    // Emit a plain (non-atomic) data-access hook before instruction `At`.
+    auto emitAccess = [&](Value *Ptr, Type *Ty, bool isWrite, Instruction *At) {
+      TypeSize TS = DL.getTypeStoreSize(Ty);
+      if (TS.isScalable())
+        return; // not produced by C/C++
+      IRBuilder<> B(At);
+      B.CreateCall(isWrite ? RaceWrite : RaceRead,
+                   {Ptr, ConstantInt::get(I64, TS.getFixedValue())});
+      ++accesses;
+    };
+
     for (Function &F : M) {
       if (F.isDeclaration())
         continue;
@@ -690,7 +706,8 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       SmallVector<CallInst *, 8> syncCalls;
       for (BasicBlock &BB : F)
         for (Instruction &I : BB) {
-          if (isa<LoadInst>(I) || isa<StoreInst>(I))
+          if (isa<LoadInst>(I) || isa<StoreInst>(I) || isa<AtomicRMWInst>(I) ||
+              isa<AtomicCmpXchgInst>(I))
             mem.push_back(&I);
           else if (auto *CI = dyn_cast<CallInst>(&I))
             if (Function *Cee = CI->getCalledFunction())
@@ -717,32 +734,60 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         continue;
 
       for (Instruction *I : mem) {
-        Value *Ptr;
-        Type *Ty;
-        bool isWrite;
+        // Plain (non-atomic) load/store -> a data access we check for races.
+        if (auto *LI = dyn_cast<LoadInst>(I)) {
+          if (!LI->isAtomic()) {
+            emitAccess(LI->getPointerOperand(), LI->getType(), /*isWrite=*/false,
+                       I);
+            continue;
+          }
+        } else if (auto *SI = dyn_cast<StoreInst>(I)) {
+          if (!SI->isAtomic()) {
+            emitAccess(SI->getPointerOperand(), SI->getValueOperand()->getType(),
+                       /*isWrite=*/true, I);
+            continue;
+          }
+        }
+
+        // Atomic op -> SYNCHRONIZATION, not a data race. Model it as
+        // acquire/release on a per-location sync object: a read acquires AFTER
+        // the op (so it sees what it observed), a write releases BEFORE it (so a
+        // future reader that observes it sees our prior writes), an RMW/cmpxchg
+        // does both. Hence correct lock-free code does not false-positive;
+        // relaxed orderings are over-approximated (at worst a missed race).
+        Value *Ptr = nullptr;
+        bool reads = false, writes = false;
         if (auto *LI = dyn_cast<LoadInst>(I)) {
           Ptr = LI->getPointerOperand();
-          Ty = LI->getType();
-          isWrite = false;
-        } else {
-          auto *SI = cast<StoreInst>(I);
+          reads = true;
+        } else if (auto *SI = dyn_cast<StoreInst>(I)) {
           Ptr = SI->getPointerOperand();
-          Ty = SI->getValueOperand()->getType();
-          isWrite = true;
+          writes = true;
+        } else if (auto *RMW = dyn_cast<AtomicRMWInst>(I)) {
+          Ptr = RMW->getPointerOperand();
+          reads = writes = true;
+        } else if (auto *CX = dyn_cast<AtomicCmpXchgInst>(I)) {
+          Ptr = CX->getPointerOperand();
+          reads = writes = true;
+        } else {
+          continue;
         }
-        TypeSize TS = DL.getTypeStoreSize(Ty);
-        if (TS.isScalable())
-          continue; // not produced by C/C++
-        IRBuilder<> B(I);
-        B.CreateCall(isWrite ? RaceWrite : RaceRead,
-                     {Ptr, ConstantInt::get(I64, TS.getFixedValue())});
-        ++accesses;
+        if (writes) {
+          IRBuilder<> B(I); // release before the store / RMW
+          B.CreateCall(AtomicRelease, {Ptr});
+        }
+        if (reads) {
+          IRBuilder<> B(I->getNextNode()); // acquire after the load / RMW
+          B.CreateCall(AtomicAcquire, {Ptr});
+        }
+        ++atomics;
       }
     }
 
-    errs() << "[redzone-race] instrumented " << accesses
-           << " access(es); redirected " << syncs << " sync call(s)\n";
-    bool Changed = accesses || syncs;
+    errs() << "[redzone-race] instrumented " << accesses << " access(es) + "
+           << atomics << " atomic op(s); redirected " << syncs
+           << " sync call(s)\n";
+    bool Changed = accesses || atomics || syncs;
     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
   }
 

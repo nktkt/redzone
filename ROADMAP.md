@@ -137,9 +137,11 @@ From a tool to a platform.
   `mutex_lock`/`unlock`/`trylock`, reader/writer locks, and condition variables.
   A racy program is flagged and correctly-synchronized ones (mutex, rwlock,
   trylock, condvar producer/consumer) run clean (`scripts/test_race_e2e.sh`); the
-  runtime alone is also stress-tested with real pthreads, 25× in CI. Remaining
-  breadth — barriers, semaphores, `pthread_once`, C/C++ atomics with memory
-  orders, and performance tuning — is still ahead; it stays a distinct opt-in
+  runtime alone is also stress-tested with real pthreads, 25× in CI. **C/C++
+  atomics** are modeled as acquire/release synchronization (loads/stores,
+  `atomicrmw`, `cmpxchg`), so lock-free code no longer false-positives. Remaining
+  breadth — barriers, semaphores, `pthread_once`, precise atomic memory orders and
+  fences, and performance tuning — is still ahead; it stays a distinct opt-in
   mode.
 - **Findings dashboard** — aggregate results across builds, track regressions
   and trends over time, triage workflow. *(The org-scale / SaaS angle.)*
