@@ -72,6 +72,16 @@ int rz_rt_pthread_rwlock_tryrdlock(pthread_rwlock_t *rwlock);
 int rz_rt_pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock);
 int rz_rt_pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
 
+// Condition-variable waits. cond_wait/timedwait atomically release and later
+// re-acquire the mutex *inside* libc, where the pass cannot see those operations
+// -- so the wrapper records the release before the wait and the re-acquire after
+// it, exactly as if the user had called unlock then lock. The data a condvar
+// guards is published through that mutex, so cond_signal/broadcast need no edge
+// and are left alone.
+int rz_rt_pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+int rz_rt_pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                                 const struct timespec *abstime);
+
 // Memory access events emitted (eventually) by the instrumentation pass. `size`
 // may span several 8-byte words; each is checked.
 void rz_rt_read(const volatile void *addr, size_t size);

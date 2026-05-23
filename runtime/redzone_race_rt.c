@@ -276,6 +276,25 @@ int rz_rt_pthread_rwlock_unlock(pthread_rwlock_t *rwlock) {
   return pthread_rwlock_unlock(rwlock);
 }
 
+// A condvar wait is, for happens-before purposes, an unlock of the mutex
+// followed (on wake) by a re-lock. Record both around the real call so the
+// edge the re-acquire carries (the signaller's writes, published via the mutex)
+// is not lost. The cond object itself needs no clock.
+int rz_rt_pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
+  rz_rt_mutex_unlock(mutex);
+  int rc = pthread_cond_wait(cond, mutex);
+  rz_rt_mutex_lock(mutex);
+  return rc;
+}
+
+int rz_rt_pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                                 const struct timespec *abstime) {
+  rz_rt_mutex_unlock(mutex);
+  int rc = pthread_cond_timedwait(cond, mutex, abstime);
+  rz_rt_mutex_lock(mutex);
+  return rc;
+}
+
 static void access_range(uintptr_t addr, size_t size, int is_write) {
   rz_thread *s = self();
   if (!s)

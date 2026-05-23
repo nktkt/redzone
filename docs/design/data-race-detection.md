@@ -170,14 +170,18 @@ but little else.
    timing-independent). It detects write-write and read-write races. (Runs opt-in;
    its misses are known.)
 2. **More primitives** (in progress) — modeled so far: `pthread_create`/`join`,
-   `pthread_mutex_lock`/`unlock`/`trylock`, and reader/writer locks
-   (`pthread_rwlock_rdlock`/`wrlock`/`tryrdlock`/`trywrlock`/`unlock`). An rwlock
-   is treated as an acquire/release on one sync object, which over-approximates
-   ordering between concurrent readers (harmless — read/read never races) while
-   capturing every real reader↔writer edge, so it stays free of false positives.
-   Still ahead: condition variables, barriers, semaphores, and `pthread_once`
-   (covered by `scripts/test_race_e2e.sh`, cases for each primitive). Also:
-   multiple shadow cells per location.
+   `pthread_mutex_lock`/`unlock`/`trylock`, reader/writer locks
+   (`pthread_rwlock_rdlock`/`wrlock`/`tryrdlock`/`trywrlock`/`unlock`), and
+   condition variables (`pthread_cond_wait`/`timedwait`). An rwlock is treated as
+   an acquire/release on one sync object, which over-approximates ordering between
+   concurrent readers (harmless — read/read never races) while capturing every
+   real reader↔writer edge, so it stays free of false positives. A condvar wait is
+   modeled as the mutex unlock/re-lock it performs internally (the data it guards
+   is published through that mutex), so `cond_signal`/`broadcast` need no edge.
+   Still ahead: barriers, semaphores, and `pthread_once` (note: barriers and
+   unnamed POSIX semaphores aren't available on macOS, the CI platform). Each
+   primitive has a case in `scripts/test_race_e2e.sh`. Also: multiple shadow cells
+   per location.
 3. **Atomics with memory orders.**
 4. **Performance** — tune shadow layout and the per-access path.
 
