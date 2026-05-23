@@ -129,11 +129,14 @@ From a tool to a platform.
   the pass's access walk but with its own shadow, runtime, and build mode.
   Designed in
   [`docs/design/data-race-detection.md`](docs/design/data-race-detection.md); the
-  happens-before **engine core and a deterministic state machine** (per-thread
-  clocks, a per-location shadow, and mutex/create/join sync events) are **built
-  and unit-tested** (`runtime/redzone_race.{c,h}`, scenarios A–I). The rest —
-  binding it to real execution (TLS clocks, live `pthread_*` interception, shadow
-  on live addresses, pass integration) — is a large sub-project still ahead.
+  happens-before **engine core, a deterministic state machine, and a real-thread
+  runtime layer** are **built and tested**: the engine + state machine
+  (`runtime/redzone_race.{c,h}`, scenarios A–I) and a runtime that drives them
+  from actual pthreads (`runtime/redzone_race_rt.{c,h}` — TLS clocks,
+  create/join wrappers, mutex acquire/release; real-thread tests run 25× in CI).
+  The remaining piece — emitting the access/sync hooks **automatically** from the
+  pass (or a dyld interposer), plus atomics and more primitives — is a large
+  sub-project still ahead.
 - **Findings dashboard** — aggregate results across builds, track regressions
   and trends over time, triage workflow. *(The org-scale / SaaS angle.)*
 - **Fuzzing integration** — coverage-guided fuzzing with redzone as the crash
