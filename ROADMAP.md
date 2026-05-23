@@ -50,7 +50,7 @@ Make it correct and fast enough to point at real code.
   shadow chunks; table kept for error-path reports only.)
 - ✅ **Allocator coverage** — `malloc`/`calloc`/`realloc`/`free` (v0.7),
   `aligned_alloc`/`posix_memalign` and C++ `new`/`new[]`/`delete`/`delete[]`
-  (v0.14). C++17 aligned `new`/`delete` remain.
+  (v0.14), including the C++17 aligned `new`/`delete` forms. Complete.
 - ✅ **Stack buffer overflow** detection (v0.6): the pass wraps each static
   stack allocation with red zones, poisoned on entry and restored on return.
 - ✅ **Global buffer overflow** detection (v0.9, v0.15): the pass wraps eligible
@@ -187,6 +187,5 @@ Run alongside every horizon, not in sequence.
   **v0.17** made the runtime **thread-safe** (allocation-table mutex; the
   per-access fast path stays lock-free). Next: cross-block / loop-range check
   elimination (the remaining `gather` overhead) and incremental instrumentation.
-- **Also deferred:** C++17 aligned `new`/`delete`, external-global underflow,
-  Bazel.
+- **Also deferred:** external-global underflow, Bazel.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.

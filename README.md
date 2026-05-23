@@ -14,7 +14,7 @@ The name comes from the *red zones*: poisoned guard regions placed around every 
 |---|---|
 | Heap buffer overflow (read/write past a `malloc`'d region) | *Detecting* data races |
 | Stack buffer overflow (past a fixed-size local) | Underflow of an *external* global |
-| Global buffer overflow (static/internal **and** external globals) | C++17 aligned `new`/`delete` |
+| Global buffer overflow (static/internal **and** external globals) | |
 | Use-after-free (read/write after a region is freed) | |
 | Double-free and invalid-free | |
 | Memory leaks (allocations never freed, reported at exit) | |
@@ -247,7 +247,8 @@ and write), double-free, and invalid-free, plus several valid programs.
 **global-buffer-overflow**, **use-after-free**, **double-free**, **invalid-free**
 and **memory leaks** across the full C/C++ allocator surface —
 `malloc`/`calloc`/`realloc`/`free`, `aligned_alloc`/`posix_memalign`, and C++
-`new`/`new[]`/`delete`/`delete[]` — reporting the faulting `file:line` and a
+`new`/`new[]`/`delete`/`delete[]` (including the C++17 aligned forms) — reporting
+the faulting `file:line` and a
 **symbolized stack trace** (plus the allocation site for heap bugs). The
 per-access check uses **shadow memory** (O(1)). Globals are covered whether
 static/internal or external (cross-TU), and the runtime is **thread-safe** (safe
@@ -257,10 +258,10 @@ incremental builds and compiler caches (**ccache** and **sccache**) work — see
 [docs/caching.md](docs/caching.md). It ships a `redzone` CLI, text/JSON/SARIF
 output, **leak suppressions**, instrumentation **opt-outs** (a
 `REDZONE_NO_INSTRUMENT` attribute and a `REDZONE_IGNORELIST` file), CMake & Make
-integration, and a 26-case suite plus format, cross-TU, report, opt-out,
+integration, and a 28-case suite plus format, cross-TU, report, opt-out,
 ignore-list, determinism, ccache, sccache, integration, and
-performance-regression checks in CI. Remaining gaps: *detecting* data races,
-C++17 aligned `new`/`delete`, and underflow of an external global.
+performance-regression checks in CI. Remaining gaps: *detecting* data races and
+underflow of an external global.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
 the allocator path is **O(1)** per `malloc`/`free` (each block finds its metadata

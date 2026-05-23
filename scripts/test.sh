@@ -43,6 +43,8 @@ CASES=(
   "cpp_new_valid.cpp:OK"
   "cpp_new_overflow.cpp:heap-buffer-overflow"
   "cpp_delete_uaf.cpp:use-after-free"
+  "cpp_aligned_new_valid.cpp:OK"
+  "cpp_aligned_new_overflow.cpp:heap-buffer-overflow"
   "threaded_valid.c:OK"
   "threaded_overflow.c:heap-buffer-overflow"
 )
@@ -65,7 +67,7 @@ instrument_and_build() {
   # free of C++ ABI deps so the final link (with the C runtime) needs no libc++,
   # since new/delete are redirected to the runtime.
   case "$src" in
-    *.cpp) cflags="$cflags -fno-exceptions -fno-rtti" ;;
+    *.cpp) cflags="$cflags -std=c++17 -fno-exceptions -fno-rtti" ;;
   esac
   clang $cflags -S -emit-llvm "$src" -o "build/${name}.ll" &&
     opt -load-pass-plugin="$PLUGIN" -passes=redzone -S "build/${name}.ll" \

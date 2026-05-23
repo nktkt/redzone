@@ -325,8 +325,9 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       SmallVector<Instruction *, 16> accesses;
       SmallVector<CallInst *, 8> mallocCalls, callocCalls, reallocCalls, freeCalls;
       SmallVector<CallInst *, 4> alignedAllocCalls, posixMemalignCalls;
-      // C++ new (size arg, like malloc) and delete (ptr arg, like free).
-      SmallVector<CallInst *, 4> newCalls, deleteCalls;
+      // C++ new (size arg, like malloc) and delete (ptr arg, like free);
+      // alignedNewCalls are C++17 aligned new (size, align) -> aligned_alloc.
+      SmallVector<CallInst *, 4> newCalls, alignedNewCalls, deleteCalls;
       SmallVector<AllocaInst *, 8> allocas;
       SmallVector<ReturnInst *, 4> returns;
 
@@ -352,9 +353,16 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
               // Itanium-mangled global operator new / new[] (take a size_t).
               else if (N == "_Znwm" || N == "_Znam")
                 newCalls.push_back(CI);
-              // operator delete / delete[], plain and sized (first arg = ptr).
+              // C++17 aligned operator new / new[] (size, align_val_t).
+              else if (N == "_ZnwmSt11align_val_t" || N == "_ZnamSt11align_val_t")
+                alignedNewCalls.push_back(CI);
+              // operator delete / delete[]: plain, sized, and C++17 aligned
+              // (plain + sized). The first argument is always the pointer.
               else if (N == "_ZdlPv" || N == "_ZdaPv" || N == "_ZdlPvm" ||
-                       N == "_ZdaPvm")
+                       N == "_ZdaPvm" || N == "_ZdlPvSt11align_val_t" ||
+                       N == "_ZdaPvSt11align_val_t" ||
+                       N == "_ZdlPvmSt11align_val_t" ||
+                       N == "_ZdaPvmSt11align_val_t")
                 deleteCalls.push_back(CI);
             }
           } else if (auto *AI = dyn_cast<AllocaInst>(&I)) {
@@ -435,6 +443,19 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         auto [FileC, LineC] = getLoc(B, CI);
         CallInst *NewCI =
             B.CreateCall(RzMalloc, {CI->getArgOperand(0), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+      // C++17 aligned operator new / new[] (size, align) ->
+      // __redzone_aligned_alloc(align, size, ...). Note the arguments are swapped.
+      for (CallInst *CI : alignedNewCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI = B.CreateCall(
+            RzAlignedAlloc,
+            {CI->getArgOperand(1), CI->getArgOperand(0), FileC, LineC});
         NewCI->takeName(CI);
         CI->replaceAllUsesWith(NewCI);
         CI->eraseFromParent();

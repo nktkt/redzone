@@ -9,7 +9,12 @@ development milestones that led to it (the commit history references them).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **C++17 aligned `new`/`delete`** coverage: the over-aligned `operator new` /
+  `new[]` (`size, std::align_val_t`) are redirected to the aligned allocator, and
+  the aligned `operator delete` / `delete[]` forms (plain and sized) to the
+  runtime's free. Over-aligned heap objects now get red zones and tracking like
+  any other allocation. Verified by `examples/cpp_aligned_new_{valid,overflow}.cpp`.
 
 ## [0.20.0] — 2026-05-23
 
