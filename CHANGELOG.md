@@ -14,6 +14,11 @@ development milestones that led to it (the commit history references them).
   cacheable and correct, and a versioned plugin filename busts the cache (sccache
   has no `CCACHE_EXTRAFILES`). Verified by `scripts/test_sccache.sh` in CI;
   documented in [`docs/caching.md`](docs/caching.md).
+- **File-level ignore-list**: `REDZONE_IGNORELIST` names a file of `fun:<glob>` /
+  `src:<glob>` rules that exclude matching functions / source files from access
+  checking — for third-party code you can't annotate. Same safe semantics as the
+  per-function attribute (allocator calls stay redirected). Verified by
+  `scripts/test_ignorelist.sh` in CI.
 
 ## [0.19.0] — 2026-05-23
 

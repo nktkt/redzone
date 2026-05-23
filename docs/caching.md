@@ -42,6 +42,13 @@ With that set, an unchanged source is a cache hit (fast), a changed source or a
 rebuilt plugin is a miss (correct). This is exercised in CI by
 [`scripts/test_ccache.sh`](../scripts/test_ccache.sh).
 
+If you use a `REDZONE_IGNORELIST` file, add it to `CCACHE_EXTRAFILES` too (it's a
+compile input the command line doesn't capture):
+
+```bash
+export CCACHE_EXTRAFILES="$PWD/build/libRedzonePass.so:$PWD/redzone.ignore"
+```
+
 ### With CMake
 
 ```cmake

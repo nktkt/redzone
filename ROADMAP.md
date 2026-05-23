@@ -98,8 +98,9 @@ Run on huge codebases and many builds without pain.
   analysis (v0.13: in-bounds-of-alloca + redundant rechecks; ~80–90% fewer
   checks, `docs/design/selective-instrumentation.md`), plus a **per-function
   opt-out** (`REDZONE_NO_INSTRUMENT` /
-  `__attribute__((disable_sanitizer_instrumentation))`). Cross-block/loop-range
-  skipping and a file-level ignore-list remain.
+  `__attribute__((disable_sanitizer_instrumentation))`) and a **file-level
+  ignore-list** (`REDZONE_IGNORELIST` with `fun:`/`src:` globs). Cross-block /
+  loop-range check elimination remains.
 - 🟡 **Incremental builds & caching** — instrumented output is **reproducible**
   (byte-identical; verified in CI), so per-TU incremental rebuilds and compiler
   caches work. **ccache** and **sccache** are both supported and tested (ccache:

@@ -53,6 +53,11 @@ jobs:
         # overflow is caught without it and allowed with it.
         run: ./scripts/test_optout.sh
 
+      - name: Ignore-list
+        # REDZONE_IGNORELIST fun:/src: rules exclude matching functions/files;
+        # the same overflow is caught without a rule and allowed when one matches.
+        run: ./scripts/test_ignorelist.sh
+
       - name: Reproducible-build (determinism) check
         # Instrumenting the same source twice must yield byte-identical objects --
         # the prerequisite for compiler caches and reproducible builds.

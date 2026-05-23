@@ -162,11 +162,13 @@ In the text leak report, leaks from the **same allocation site are collapsed**
 into one line with a count (so a loop that leaks 10 000 blocks prints one line,
 not 10 000); JSON/SARIF still list every leaked block for tooling.
 
-## Excluding a function
+## Excluding code
 
-Mark a function `REDZONE_NO_INSTRUMENT` (from `redzone_rt.h`) to exclude it from
-access checking and stack red-zoning — useful for a hot path, or code that does
-intentional out-of-bounds pointer math:
+Sometimes you want to exclude code from access checking — a hot path, or code
+that does intentional out-of-bounds pointer math. Two ways:
+
+**Per function, in the source** — mark it `REDZONE_NO_INSTRUMENT` (from
+`redzone_rt.h`):
 
 ```c
 #include "redzone_rt.h"
@@ -176,9 +178,24 @@ void hot_path(int *a, int n) { /* no per-access checks emitted here */ }
 ```
 
 It maps to clang's standard `__attribute__((disable_sanitizer_instrumentation))`,
-so code already annotated for AddressSanitizer works unchanged. The function's
-heap allocations are still tracked (its `malloc`/`free` are still redirected), so
-opting out can never corrupt the heap — it only removes the per-access checks.
+so code already annotated for AddressSanitizer works unchanged.
+
+**By pattern, without touching the source** — point `REDZONE_IGNORELIST` at a file
+of `fun:` / `src:` glob rules (handy for third-party code you can't edit):
+
+```bash
+cat > redzone.ignore <<'EOF'
+fun:legacy_*        # exclude functions whose name matches
+src:*/vendor/*      # exclude whole source files
+EOF
+REDZONE_IGNORELIST=redzone.ignore ./scripts/redzone run prog.c
+```
+
+Either way, the excluded code's **heap allocations are still tracked** (its
+`malloc`/`free` are still redirected), so opting out can never corrupt the heap —
+it only removes the per-access checks and stack red-zoning. (`src:` matches a
+translation unit's source file; `fun:` matches the — possibly mangled — function
+name.)
 
 ## Roadmap
 
@@ -238,10 +255,11 @@ to use in multithreaded programs). Reports are **colorized** (TTY-aware) with
 **deduplicated** leak summaries. Instrumented output is **reproducible**, so
 incremental builds and compiler caches (**ccache** and **sccache**) work — see
 [docs/caching.md](docs/caching.md). It ships a `redzone` CLI, text/JSON/SARIF
-output, **leak suppressions**, a per-function **opt-out** (`REDZONE_NO_INSTRUMENT`),
-CMake & Make integration, and a 26-case suite plus format, cross-TU, report,
-opt-out, determinism, ccache, sccache, integration, and performance-regression
-checks in CI. Remaining gaps: *detecting* data races,
+output, **leak suppressions**, instrumentation **opt-outs** (a
+`REDZONE_NO_INSTRUMENT` attribute and a `REDZONE_IGNORELIST` file), CMake & Make
+integration, and a 26-case suite plus format, cross-TU, report, opt-out,
+ignore-list, determinism, ccache, sccache, integration, and
+performance-regression checks in CI. Remaining gaps: *detecting* data races,
 C++17 aligned `new`/`delete`, and underflow of an external global.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,

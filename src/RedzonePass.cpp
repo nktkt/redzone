@@ -45,12 +45,51 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <algorithm>
+#include <fnmatch.h>
+#include <fstream>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 using namespace llvm;
 
 namespace {
+
+// Load `fun:<glob>` / `src:<glob>` rules from the file named by the
+// REDZONE_IGNORELIST environment variable, if set. Blank lines and `#` comments
+// are ignored; unknown prefixes and a missing/unreadable file are skipped
+// (best-effort, like a suppressions file). `fun:` matches a function's (mangled)
+// name; `src:` matches the translation unit's source file.
+static void loadIgnorelist(std::vector<std::string> &funPats,
+                           std::vector<std::string> &srcPats) {
+  const char *path = getenv("REDZONE_IGNORELIST");
+  if (!path)
+    return;
+  std::ifstream in(path);
+  if (!in)
+    return;
+  std::string line;
+  while (std::getline(in, line)) {
+    size_t a = line.find_first_not_of(" \t");
+    if (a == std::string::npos || line[a] == '#')
+      continue;
+    size_t b = line.find_last_not_of(" \t\r");
+    std::string s = line.substr(a, b - a + 1);
+    if (s.rfind("fun:", 0) == 0 && s.size() > 4)
+      funPats.push_back(s.substr(4));
+    else if (s.rfind("src:", 0) == 0 && s.size() > 4)
+      srcPats.push_back(s.substr(4));
+  }
+}
+
+static bool globMatchAny(const std::vector<std::string> &pats, StringRef s) {
+  std::string str = s.str();
+  for (const std::string &p : pats)
+    if (fnmatch(p.c_str(), str.c_str(), 0) == 0)
+      return true;
+  return false;
+}
 
 static constexpr uint64_t kRedzone = 16; // guard bytes on each side (matches rt)
 
@@ -155,6 +194,13 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
 
     unsigned checks = 0, mallocs = 0, frees = 0, stackVars = 0, globals = 0;
     unsigned skippedSafe = 0, skippedRedundant = 0, optedOutFns = 0;
+
+    // Ignore-list: exclude functions/source files matching REDZONE_IGNORELIST
+    // rules (like the per-function attribute, but for code you can't annotate).
+    // `src:` is matched once against this TU's source file; `fun:` per function.
+    std::vector<std::string> ignoreFunPats, ignoreSrcPats;
+    loadIgnorelist(ignoreFunPats, ignoreSrcPats);
+    bool moduleIgnored = globMatchAny(ignoreSrcPats, M.getSourceFileName());
 
     // Wrap eligible globals with red zones, and install a constructor that
     // poisons them at startup. Two cases differ in ABI safety:
@@ -261,16 +307,18 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       if (F.getName().starts_with("__redzone"))
         continue; // never instrument the runtime
 
-      // Per-function opt-out: a function marked
-      // __attribute__((disable_sanitizer_instrumentation)) (exposed as
-      // REDZONE_NO_INSTRUMENT) gets no access checks and no stack red zones --
-      // for hot paths or code that does intentional pointer tricks. Its
+      // Exclude this function from access checks and stack red zones if it opts
+      // out -- via __attribute__((disable_sanitizer_instrumentation)) (exposed as
+      // REDZONE_NO_INSTRUMENT) or a matching REDZONE_IGNORELIST rule -- e.g. a hot
+      // path, third-party code, or code that does intentional pointer tricks. Its
       // allocator calls are STILL redirected below, so heap tracking stays
       // consistent (a plain free() of a redzone-allocated pointer would corrupt
       // the heap). We instrument before inlining, so the opt-out holds even if
       // such a function is later inlined into an instrumented one.
-      bool optedOut = F.hasFnAttribute(Attribute::DisableSanitizerInstrumentation);
-      if (optedOut)
+      bool skipInstr =
+          F.hasFnAttribute(Attribute::DisableSanitizerInstrumentation) ||
+          moduleIgnored || globMatchAny(ignoreFunPats, F.getName());
+      if (skipInstr)
         ++optedOutFns;
 
       // Collect first, mutate after, to avoid invalidating iterators.
@@ -407,9 +455,9 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         ++frees;
       }
 
-      // Opted-out functions get no access checks and no stack red zones;
+      // Excluded functions get no access checks and no stack red zones;
       // everything below is skipped for them.
-      if (optedOut)
+      if (skipInstr)
         continue;
 
       // Selective instrumentation: decide which accesses to skip BEFORE any
