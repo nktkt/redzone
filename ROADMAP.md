@@ -125,6 +125,10 @@ From a tool to a platform.
 - **Checker plugin API** — third parties add new detectors on the shared
   instrumentation + shadow-memory infrastructure (new "modes" alongside
   address/leak: uninitialized memory, undefined behavior, data races).
+- **Data-race detection** — a happens-before (vector-clock) detector reusing the
+  pass's access walk but with its own shadow, runtime, and build mode. Designed in
+  [`docs/design/data-race-detection.md`](docs/design/data-race-detection.md); a
+  large, separate sub-project (not yet implemented).
 - **Findings dashboard** — aggregate results across builds, track regressions
   and trends over time, triage workflow. *(The org-scale / SaaS angle.)*
 - **Fuzzing integration** — coverage-guided fuzzing with redzone as the crash
