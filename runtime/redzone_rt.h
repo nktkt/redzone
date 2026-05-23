@@ -12,6 +12,17 @@
 
 #include <stddef.h>
 
+// Mark a function to be excluded from redzone's access checking and stack
+// red-zoning -- for a hot path, or code that does intentional out-of-bounds
+// pointer math. The function's heap allocations are still tracked (its
+// malloc/free are still redirected), so opting out can't corrupt the heap.
+// Maps to clang's standard disable_sanitizer_instrumentation attribute.
+#if defined(__has_attribute) && __has_attribute(disable_sanitizer_instrumentation)
+#define REDZONE_NO_INSTRUMENT __attribute__((disable_sanitizer_instrumentation))
+#else
+#define REDZONE_NO_INSTRUMENT
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

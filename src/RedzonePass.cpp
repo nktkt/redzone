@@ -154,7 +154,7 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
     };
 
     unsigned checks = 0, mallocs = 0, frees = 0, stackVars = 0, globals = 0;
-    unsigned skippedSafe = 0, skippedRedundant = 0;
+    unsigned skippedSafe = 0, skippedRedundant = 0, optedOutFns = 0;
 
     // Wrap eligible globals with red zones, and install a constructor that
     // poisons them at startup. Two cases differ in ABI safety:
@@ -261,6 +261,18 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       if (F.getName().starts_with("__redzone"))
         continue; // never instrument the runtime
 
+      // Per-function opt-out: a function marked
+      // __attribute__((disable_sanitizer_instrumentation)) (exposed as
+      // REDZONE_NO_INSTRUMENT) gets no access checks and no stack red zones --
+      // for hot paths or code that does intentional pointer tricks. Its
+      // allocator calls are STILL redirected below, so heap tracking stays
+      // consistent (a plain free() of a redzone-allocated pointer would corrupt
+      // the heap). We instrument before inlining, so the opt-out holds even if
+      // such a function is later inlined into an instrumented one.
+      bool optedOut = F.hasFnAttribute(Attribute::DisableSanitizerInstrumentation);
+      if (optedOut)
+        ++optedOutFns;
+
       // Collect first, mutate after, to avoid invalidating iterators.
       SmallVector<Instruction *, 16> accesses;
       SmallVector<CallInst *, 8> mallocCalls, callocCalls, reallocCalls, freeCalls;
@@ -304,6 +316,101 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
           }
         }
       }
+
+      // Redirect allocator / free calls in EVERY function -- even opted-out ones
+      // -- so heap tracking stays consistent (a plain free() of a
+      // redzone-allocated pointer would corrupt the heap). Steps 3 and 4 below
+      // touch only call sites, so they are safe to run before the opt-out check.
+
+      // 3. Redirect malloc: rebuild the call with the allocation-site location.
+      for (CallInst *CI : mallocCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI =
+            B.CreateCall(RzMalloc, {CI->getArgOperand(0), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+      // calloc(nmemb, size) -> __redzone_calloc(nmemb, size, file, line)
+      for (CallInst *CI : callocCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI = B.CreateCall(
+            RzCalloc, {CI->getArgOperand(0), CI->getArgOperand(1), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+      // realloc(ptr, size) -> __redzone_realloc(ptr, size, file, line)
+      for (CallInst *CI : reallocCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI = B.CreateCall(
+            RzRealloc, {CI->getArgOperand(0), CI->getArgOperand(1), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+      // aligned_alloc(align, size) -> __redzone_aligned_alloc(align,size,file,line)
+      for (CallInst *CI : alignedAllocCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI = B.CreateCall(
+            RzAlignedAlloc,
+            {CI->getArgOperand(0), CI->getArgOperand(1), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+      // posix_memalign(memptr, align, size) ->
+      //   __redzone_posix_memalign(memptr, align, size, file, line)
+      for (CallInst *CI : posixMemalignCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI = B.CreateCall(
+            RzPosixMemalign, {CI->getArgOperand(0), CI->getArgOperand(1),
+                              CI->getArgOperand(2), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+      // C++ operator new / new[] (size arg) -> __redzone_malloc, so new'd blocks
+      // get red zones and are tracked just like malloc'd ones.
+      for (CallInst *CI : newCalls) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        CallInst *NewCI =
+            B.CreateCall(RzMalloc, {CI->getArgOperand(0), FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++mallocs;
+      }
+      // 4. Redirect free: same signature, just swap the callee.
+      for (CallInst *CI : freeCalls) {
+        CI->setCalledFunction(RzFree);
+        ++frees;
+      }
+      // C++ operator delete / delete[] (plain or sized) -> __redzone_free. The
+      // sized forms carry an extra size arg, so rebuild the call with just the
+      // pointer rather than swapping the callee in place.
+      for (CallInst *CI : deleteCalls) {
+        IRBuilder<> B(CI);
+        B.CreateCall(RzFree, {CI->getArgOperand(0)});
+        CI->eraseFromParent();
+        ++frees;
+      }
+
+      // Opted-out functions get no access checks and no stack red zones;
+      // everything below is skipped for them.
+      if (optedOut)
+        continue;
 
       // Selective instrumentation: decide which accesses to skip BEFORE any
       // alloca wrapping (which would move pointers into red-zone-padded allocas
@@ -417,98 +524,13 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
                               ConstantInt::get(I32, IsWrite ? 1 : 0), FileC, LineC});
         ++checks;
       }
-
-      // 3. Redirect malloc: rebuild the call with the allocation-site location.
-      for (CallInst *CI : mallocCalls) {
-        IRBuilder<> B(CI);
-        auto [FileC, LineC] = getLoc(B, CI);
-        CallInst *NewCI =
-            B.CreateCall(RzMalloc, {CI->getArgOperand(0), FileC, LineC});
-        NewCI->takeName(CI);
-        CI->replaceAllUsesWith(NewCI);
-        CI->eraseFromParent();
-        ++mallocs;
-      }
-      // calloc(nmemb, size) -> __redzone_calloc(nmemb, size, file, line)
-      for (CallInst *CI : callocCalls) {
-        IRBuilder<> B(CI);
-        auto [FileC, LineC] = getLoc(B, CI);
-        CallInst *NewCI = B.CreateCall(
-            RzCalloc, {CI->getArgOperand(0), CI->getArgOperand(1), FileC, LineC});
-        NewCI->takeName(CI);
-        CI->replaceAllUsesWith(NewCI);
-        CI->eraseFromParent();
-        ++mallocs;
-      }
-      // realloc(ptr, size) -> __redzone_realloc(ptr, size, file, line)
-      for (CallInst *CI : reallocCalls) {
-        IRBuilder<> B(CI);
-        auto [FileC, LineC] = getLoc(B, CI);
-        CallInst *NewCI = B.CreateCall(
-            RzRealloc, {CI->getArgOperand(0), CI->getArgOperand(1), FileC, LineC});
-        NewCI->takeName(CI);
-        CI->replaceAllUsesWith(NewCI);
-        CI->eraseFromParent();
-        ++mallocs;
-      }
-      // aligned_alloc(align, size) -> __redzone_aligned_alloc(align,size,file,line)
-      for (CallInst *CI : alignedAllocCalls) {
-        IRBuilder<> B(CI);
-        auto [FileC, LineC] = getLoc(B, CI);
-        CallInst *NewCI = B.CreateCall(
-            RzAlignedAlloc,
-            {CI->getArgOperand(0), CI->getArgOperand(1), FileC, LineC});
-        NewCI->takeName(CI);
-        CI->replaceAllUsesWith(NewCI);
-        CI->eraseFromParent();
-        ++mallocs;
-      }
-      // posix_memalign(memptr, align, size) ->
-      //   __redzone_posix_memalign(memptr, align, size, file, line)
-      for (CallInst *CI : posixMemalignCalls) {
-        IRBuilder<> B(CI);
-        auto [FileC, LineC] = getLoc(B, CI);
-        CallInst *NewCI = B.CreateCall(
-            RzPosixMemalign, {CI->getArgOperand(0), CI->getArgOperand(1),
-                              CI->getArgOperand(2), FileC, LineC});
-        NewCI->takeName(CI);
-        CI->replaceAllUsesWith(NewCI);
-        CI->eraseFromParent();
-        ++mallocs;
-      }
-      // C++ operator new / new[] (size arg) -> __redzone_malloc, so new'd blocks
-      // get red zones and are tracked just like malloc'd ones.
-      for (CallInst *CI : newCalls) {
-        IRBuilder<> B(CI);
-        auto [FileC, LineC] = getLoc(B, CI);
-        CallInst *NewCI =
-            B.CreateCall(RzMalloc, {CI->getArgOperand(0), FileC, LineC});
-        NewCI->takeName(CI);
-        CI->replaceAllUsesWith(NewCI);
-        CI->eraseFromParent();
-        ++mallocs;
-      }
-
-      // 4. Redirect free: same signature, just swap the callee.
-      for (CallInst *CI : freeCalls) {
-        CI->setCalledFunction(RzFree);
-        ++frees;
-      }
-      // C++ operator delete / delete[] (plain or sized) -> __redzone_free. The
-      // sized forms carry an extra size arg, so rebuild the call with just the
-      // pointer rather than swapping the callee in place.
-      for (CallInst *CI : deleteCalls) {
-        IRBuilder<> B(CI);
-        B.CreateCall(RzFree, {CI->getArgOperand(0)});
-        CI->eraseFromParent();
-        ++frees;
-      }
     }
 
     errs() << "[redzone] instrumented " << checks << " access(es) (skipped "
            << skippedSafe << " safe + " << skippedRedundant << " redundant); "
            << stackVars << " stack var(s); " << globals << " global(s); redirected "
-           << mallocs << " alloc / " << frees << " free call(s)\n";
+           << mallocs << " alloc / " << frees << " free call(s); " << optedOutFns
+           << " opted-out fn(s)\n";
 
     bool Changed = checks || mallocs || frees || stackVars || globals;
     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();

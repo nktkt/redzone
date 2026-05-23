@@ -96,8 +96,10 @@ Run on huge codebases and many builds without pain.
 
 - ✅ **Selective instrumentation** — skip provably-safe accesses via static
   analysis (v0.13: in-bounds-of-alloca + redundant rechecks; ~80–90% fewer
-  checks, `docs/design/selective-instrumentation.md`). Cross-block/loop-range
-  skipping and per-file/per-function opt-out attributes remain.
+  checks, `docs/design/selective-instrumentation.md`), plus a **per-function
+  opt-out** (`REDZONE_NO_INSTRUMENT` /
+  `__attribute__((disable_sanitizer_instrumentation))`). Cross-block/loop-range
+  skipping and a file-level ignore-list remain.
 - 🟡 **Incremental builds & caching** — instrumented output is **reproducible**
   (byte-identical; verified in CI), so per-TU incremental rebuilds and compiler
   caches work. **ccache** is supported and tested (list the plugin in

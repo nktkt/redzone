@@ -19,6 +19,10 @@ development milestones that led to it (the commit history references them).
   `scripts/test_determinism.sh`), and redzone works with **ccache** — list the
   plugin in `CCACHE_EXTRAFILES` so a plugin rebuild busts the cache
   (`scripts/test_ccache.sh`). Both run in CI.
+- **Per-function opt-out**: `REDZONE_NO_INSTRUMENT` (clang's
+  `disable_sanitizer_instrumentation`) excludes a function from access checking
+  and stack red-zoning while still redirecting its allocator calls
+  (`scripts/test_optout.sh`).
 
 ## [0.18.0] — 2026-05-23
 

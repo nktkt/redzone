@@ -162,6 +162,24 @@ In the text leak report, leaks from the **same allocation site are collapsed**
 into one line with a count (so a loop that leaks 10 000 blocks prints one line,
 not 10 000); JSON/SARIF still list every leaked block for tooling.
 
+## Excluding a function
+
+Mark a function `REDZONE_NO_INSTRUMENT` (from `redzone_rt.h`) to exclude it from
+access checking and stack red-zoning — useful for a hot path, or code that does
+intentional out-of-bounds pointer math:
+
+```c
+#include "redzone_rt.h"
+
+REDZONE_NO_INSTRUMENT
+void hot_path(int *a, int n) { /* no per-access checks emitted here */ }
+```
+
+It maps to clang's standard `__attribute__((disable_sanitizer_instrumentation))`,
+so code already annotated for AddressSanitizer works unchanged. The function's
+heap allocations are still tracked (its `malloc`/`free` are still redirected), so
+opting out can never corrupt the heap — it only removes the per-access checks.
+
 ## Roadmap
 
 The near-term goal is a correct heap checker; the long-term goal is a scalable,
@@ -220,9 +238,9 @@ to use in multithreaded programs). Reports are **colorized** (TTY-aware) with
 **deduplicated** leak summaries. Instrumented output is **reproducible**, so
 incremental builds and compiler caches (**ccache**) work — see
 [docs/caching.md](docs/caching.md). It ships a `redzone` CLI, text/JSON/SARIF
-output, **leak suppressions**, CMake & Make integration, and a 26-case suite plus
-format, cross-TU, report, determinism, ccache, integration, and
-performance-regression checks in CI. Remaining gaps: *detecting* data races,
+output, **leak suppressions**, a per-function **opt-out** (`REDZONE_NO_INSTRUMENT`),
+CMake & Make integration, and a 26-case suite plus format, cross-TU, report,
+opt-out, determinism, ccache, integration, and performance-regression checks in CI. Remaining gaps: *detecting* data races,
 C++17 aligned `new`/`delete`, and underflow of an external global.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,

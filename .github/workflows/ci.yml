@@ -48,6 +48,11 @@ jobs:
         # and that REDZONE_SUPPRESSIONS silences a matching leak.
         run: ./scripts/test_reports.sh
 
+      - name: Per-function opt-out
+        # REDZONE_NO_INSTRUMENT excludes a function from access checking: the same
+        # overflow is caught without it and allowed with it.
+        run: ./scripts/test_optout.sh
+
       - name: Reproducible-build (determinism) check
         # Instrumenting the same source twice must yield byte-identical objects --
         # the prerequisite for compiler caches and reproducible builds.
