@@ -12,10 +12,10 @@ The name comes from the *red zones*: poisoned guard regions placed around every 
 
 | Detected ✅ | Out of scope (for now) ❌ |
 |---|---|
-| Heap buffer overflow (read/write past a `malloc`'d region) | External (non-static) globals |
-| Stack buffer overflow (past a fixed-size local) | Data races (multithreading) |
-| Global buffer overflow (past a static/internal global) | Performance optimization |
-| Use-after-free (read/write after a region is freed) | |
+| Heap buffer overflow (read/write past a `malloc`'d region) | Data races (multithreading) |
+| Stack buffer overflow (past a fixed-size local) | Underflow of an *external* global |
+| Global buffer overflow (static/internal **and** external globals) | C++17 aligned `new`/`delete` |
+| Use-after-free (read/write after a region is freed) | Performance optimization |
 | Double-free and invalid-free | |
 | Memory leaks (allocations never freed, reported at exit) | |
 
@@ -44,7 +44,7 @@ Keeping the scope tight is deliberate: nail heap bugs first, expand later.
                          report + abort
 ```
 
-1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write, file, line)` (skipping accesses it can prove are safe). It also redirects user allocator calls to the runtime's versions (forwarding the allocation-site `file:line`) — `malloc`/`calloc`/`realloc`/`free`, `aligned_alloc`/`posix_memalign`, and C++ `new`/`new[]`/`delete`/`delete[]` — wraps each static stack allocation with red zones (poisoned at function entry, restored before each return), and wraps eligible static/internal globals with red zones (poisoned by a startup constructor) — so stack and global overflows are caught too.
+1. **Instrumentation pass** (LLVM, C++): walks every function and, before each `load`/`store`, injects a call to `__redzone_check(addr, size, is_write, file, line)` (skipping accesses it can prove are safe). It also redirects user allocator calls to the runtime's versions (forwarding the allocation-site `file:line`) — `malloc`/`calloc`/`realloc`/`free`, `aligned_alloc`/`posix_memalign`, and C++ `new`/`new[]`/`delete`/`delete[]` — wraps each static stack allocation with red zones (poisoned at function entry, restored before each return), and wraps eligible globals with red zones (poisoned by a startup constructor — internal globals on both sides, external globals with a trailing red zone that keeps the symbol's address stable for other translation units) — so stack and global overflows are caught too.
 2. **Runtime library** (C):
    - `__redzone_malloc` allocates the requested bytes plus surrounding **red zones**, marks the user region addressable and the red zones poisoned in **shadow memory**, and records `{base, size, freed?, alloc site}` in a metadata table.
    - `__redzone_free` quarantines the block and poisons its shadow as freed, so later access is detectable as **use-after-free**.
@@ -157,10 +157,11 @@ and **memory leaks** across the full C/C++ allocator surface —
 `malloc`/`calloc`/`realloc`/`free`, `aligned_alloc`/`posix_memalign`, and C++
 `new`/`new[]`/`delete`/`delete[]` — reporting the faulting `file:line` (plus the
 allocation site for heap bugs). The per-access check uses **shadow memory**
-(O(1)). It ships a `redzone` CLI, text/JSON/SARIF output, CMake & Make
-integration, and a 21-case suite plus format, integration, and
-performance-regression checks in CI. Remaining gaps: external (non-static)
-globals, C++17 aligned `new`/`delete`, and threading.
+(O(1)). Globals are covered whether static/internal or external (cross-TU). It
+ships a `redzone` CLI, text/JSON/SARIF output, CMake & Make integration, and a
+23-case suite plus format, cross-TU, integration, and performance-regression
+checks in CI. Remaining gaps: C++17 aligned `new`/`delete`, underflow of an
+external global, and threading.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
 the allocator path is **O(1)** per `malloc`/`free` (each block finds its metadata

@@ -37,6 +37,12 @@ jobs:
         # error-kind / ruleId (and that a clean program emits none).
         run: ./scripts/test_formats.sh
 
+      - name: Cross-TU external-global test
+        # Proves external globals stay ABI-safe: an un-instrumented translation
+        # unit must read the wrapped symbol's data correctly (its address is
+        # preserved), and an overflow of it is still detected.
+        run: ./scripts/test_cross_tu.sh
+
       - name: Build-system integration examples
         # Exercise both the CMake and Make integration recipes end to end. The
         # pass plugin (build/libRedzonePass.so) already exists from the earlier

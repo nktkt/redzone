@@ -53,9 +53,11 @@ Make it correct and fast enough to point at real code.
   (v0.14). C++17 aligned `new`/`delete` remain.
 - ✅ **Stack buffer overflow** detection (v0.6): the pass wraps each static
   stack allocation with red zones, poisoned on entry and restored on return.
-- ✅ **Global buffer overflow** detection (v0.9): the pass wraps eligible
-  static/internal globals in red-zone-padded structs and poisons them via a
-  module constructor. External (non-static) globals remain.
+- ✅ **Global buffer overflow** detection (v0.9, v0.15): the pass wraps eligible
+  globals in red-zone-padded structs and poisons them via a module constructor —
+  internal globals on both sides, and external (non-static) globals with a
+  trailing red zone that preserves the symbol's address for other TUs (v0.15;
+  cross-TU tested). External-global underflow remains out of scope.
 - ✅ **Memory leak detection** at exit (v0.5): un-freed blocks are reported with
   their allocation site; the process exits nonzero. (Reachability-aware analysis
   is a later refinement.)
@@ -165,9 +167,9 @@ Run alongside every horizon, not in sequence.
   instrumentation** (v0.13) done — compute-bound overhead fell ~14x → ~1.1x and
   the allocator path ~800x → ~7.5x (`docs/benchmarks.md`), with a `bench.sh
   --check` regression gate now in CI. **v0.14** added `aligned_alloc`/
-  `posix_memalign` and C++ `new`/`delete` coverage. Next: cross-block / loop-range
-  check elimination (the remaining `gather` overhead) and incremental
-  instrumentation.
-- **Also deferred:** external (non-static) globals, C++17 aligned `new`/`delete`,
+  `posix_memalign` and C++ `new`/`delete` coverage; **v0.15** added external
+  (non-static) global coverage. Next: cross-block / loop-range check elimination
+  (the remaining `gather` overhead) and incremental instrumentation.
+- **Also deferred:** C++17 aligned `new`/`delete`, external-global underflow,
   Bazel.
 - **Later:** real-world scale (selective/incremental instrumentation), platform.

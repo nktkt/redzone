@@ -48,8 +48,11 @@ void __redzone_stack_leave(void *base, size_t user_size);
 
 // Poison the red zones around a global variable the pass has wrapped. Called
 // once per global from a module constructor the pass installs. `data` points at
-// the variable's data; `size` is its size.
+// the variable's data; `size` is its size. The _register form is for internal
+// globals (red zones on both sides); _register_right is for external globals,
+// whose data must stay at the symbol's base, so the red zone is trailing-only.
 void __redzone_global_register(void *data, size_t size);
+void __redzone_global_register_right(void *data, size_t size);
 
 #ifdef __cplusplus
 }

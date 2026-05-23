@@ -526,12 +526,15 @@ void __redzone_stack_leave(void *base_v, size_t user_size) {
 // Global red zones
 //===----------------------------------------------------------------------===//
 //
-// The pass wraps each eligible global in a struct with red zones on both sides
-// and installs a module constructor that calls this once per global at startup.
-// `data` points at the variable's data; `size` is its size. The surrounding
-// red-zone bytes physically belong to the wrapper struct, so poisoning their
-// shadow never touches a neighbouring symbol.
+// The pass wraps each eligible global in a struct with red zones and installs a
+// module constructor that calls one of these once per global at startup. `data`
+// points at the variable's data; `size` is its size. The red-zone bytes
+// physically belong to the wrapper struct, so poisoning their shadow never
+// touches a neighbouring symbol.
 
+// Internal globals are wrapped with red zones on BOTH sides ({leftrz, data,
+// rightrz}); `data` is REDZONE_SIZE past the wrapper base. Both over- and
+// under-flow are caught.
 void __redzone_global_register(void *data_v, size_t size) {
   uintptr_t data = (uintptr_t)data_v;
   uintptr_t base = data - REDZONE_SIZE;
@@ -543,6 +546,22 @@ void __redzone_global_register(void *data_v, size_t size) {
     set_shadow_range(data, aligned, 0);
   if (rem)
     set_shadow_byte(data + aligned, (int8_t)rem);
+}
+
+// External globals keep `data` at the symbol's base (offset 0) so the address is
+// unchanged and other translation units that reference the symbol stay correct;
+// the red zone goes only AFTER the data ({data, rightrz}). We must not poison
+// anything before `data` -- that memory belongs to another symbol. Overflow is
+// caught; underflow of an external global is not (an accepted limitation).
+void __redzone_global_register_right(void *data_v, size_t size) {
+  uintptr_t data = (uintptr_t)data_v;
+  set_shadow_range(data + size, REDZONE_SIZE, GLOBAL_RZ); // trailing red zone
+  size_t aligned = size & ~(size_t)7;
+  size_t rem = size & 7;
+  if (aligned)
+    set_shadow_range(data, aligned, 0); // data region addressable
+  if (rem)
+    set_shadow_byte(data + aligned, (int8_t)rem); // partial tail (re-asserted)
 }
 
 //===----------------------------------------------------------------------===//

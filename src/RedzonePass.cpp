@@ -85,6 +85,8 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         "__redzone_posix_memalign", I32, PtrTy, I64, I64, PtrTy, I32);
     FunctionCallee GlobalRegister =
         M.getOrInsertFunction("__redzone_global_register", VoidTy, PtrTy, I64);
+    FunctionCallee GlobalRegisterRight = M.getOrInsertFunction(
+        "__redzone_global_register_right", VoidTy, PtrTy, I64);
     // Base of the direct-mapped shadow, defined by the runtime; loaded inline.
     Constant *ShadowBaseGV = M.getOrInsertGlobal("__redzone_shadow_base", PtrTy);
 
@@ -154,19 +156,36 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
     unsigned checks = 0, mallocs = 0, frees = 0, stackVars = 0, globals = 0;
     unsigned skippedSafe = 0, skippedRedundant = 0;
 
-    // Wrap eligible globals (defined, internal-linkage, non-const) with red
-    // zones, and install a constructor that poisons them at startup. Internal
-    // linkage keeps this safe: the symbol isn't referenced from other TUs, so
-    // changing its type/address can't break anything outside this module.
+    // Wrap eligible globals with red zones, and install a constructor that
+    // poisons them at startup. Two cases differ in ABI safety:
+    //   * INTERNAL linkage: the symbol isn't referenced from other TUs, so we
+    //     can change its type/address freely -> red zones on BOTH sides
+    //     ({leftrz, data, rightrz}); over- and under-flow are caught.
+    //   * EXTERNAL linkage: other TUs reference the symbol, so its address must
+    //     not move -> keep data at offset 0 with a TRAILING red zone only
+    //     ({data, rightrz}). Cross-TU references still land on the data; only
+    //     underflow detection is given up.
     {
-      SmallVector<GlobalVariable *, 8> targets;
+      // (global, isExternal) pairs eligible for wrapping.
+      SmallVector<std::pair<GlobalVariable *, bool>, 8> targets;
       for (GlobalVariable &G : M.globals()) {
         if (G.isDeclaration() || G.isConstant() || G.isThreadLocal())
           continue;
-        if (!G.hasInitializer() || !G.hasLocalLinkage() || G.hasSection())
+        if (!G.hasInitializer() || G.hasSection() || G.hasComdat() ||
+            G.isExternallyInitialized())
           continue;
         if (G.getName().starts_with("llvm.") ||
             G.getName().starts_with("__redzone"))
+          continue;
+        // Only two linkages are safe to transform: internal/private (address may
+        // move) and plain external (address must be preserved). Skip weak,
+        // linkonce, common, appending, etc.
+        bool isExternal;
+        if (G.hasLocalLinkage())
+          isExternal = false;
+        else if (G.hasExternalLinkage())
+          isExternal = true;
+        else
           continue;
         Type *T = G.getValueType();
         if (!T->isSized())
@@ -176,33 +195,50 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
           continue;
         if (G.getAlign() && G.getAlign()->value() > kRedzone)
           continue;
-        targets.push_back(&G);
+        targets.push_back({&G, isExternal});
       }
 
-      SmallVector<std::pair<Constant *, uint64_t>, 8> toRegister;
-      for (GlobalVariable *G : targets) {
+      // (dataPtr, size, isExternal) to register at startup.
+      SmallVector<std::tuple<Constant *, uint64_t, bool>, 8> toRegister;
+      for (auto [G, isExternal] : targets) {
         Type *T = G->getValueType();
         uint64_t S = DL.getTypeAllocSize(T).getFixedValue();
-        uint64_t pad = (8 - (S % 8)) % 8; // so data+rightzone is 8-aligned
-        ArrayType *LRZTy = ArrayType::get(Int8Ty, kRedzone);
+        uint64_t pad = (8 - (S % 8)) % 8; // so the trailing zone stays 8-aligned
         ArrayType *RRZTy = ArrayType::get(Int8Ty, kRedzone + pad);
-        StructType *NTy = StructType::get(Ctx, {LRZTy, T, RRZTy});
-        Constant *Init = ConstantStruct::get(
-            NTy, {ConstantAggregateZero::get(LRZTy), G->getInitializer(),
-                  ConstantAggregateZero::get(RRZTy)});
+
+        StructType *NTy;
+        Constant *Init;
+        unsigned dataField;
+        if (isExternal) {
+          // {data, rightrz}: data at offset 0 keeps the symbol address stable.
+          NTy = StructType::get(Ctx, {T, RRZTy});
+          Init = ConstantStruct::get(
+              NTy, {G->getInitializer(), ConstantAggregateZero::get(RRZTy)});
+          dataField = 0;
+        } else {
+          // {leftrz, data, rightrz}: full guarding for an internal symbol.
+          ArrayType *LRZTy = ArrayType::get(Int8Ty, kRedzone);
+          NTy = StructType::get(Ctx, {LRZTy, T, RRZTy});
+          Init = ConstantStruct::get(
+              NTy, {ConstantAggregateZero::get(LRZTy), G->getInitializer(),
+                    ConstantAggregateZero::get(RRZTy)});
+          dataField = 1;
+        }
+
         auto *NG = new GlobalVariable(M, NTy, /*isConstant=*/false,
                                       G->getLinkage(), Init, G->getName() + ".rz");
         MaybeAlign A = G->getAlign();
         NG->setAlignment(Align(std::max<uint64_t>(kRedzone, A ? A->value() : 1)));
 
-        // Point all users at the data field (struct index 1).
-        Constant *Idx[] = {ConstantInt::get(I32, 0), ConstantInt::get(I32, 1)};
+        // Point all users at the data field (offset 0 for external).
+        Constant *Idx[] = {ConstantInt::get(I32, 0),
+                           ConstantInt::get(I32, dataField)};
         Constant *DataPtr = ConstantExpr::getInBoundsGetElementPtr(NTy, NG, Idx);
         G->replaceAllUsesWith(DataPtr);
         NG->takeName(G);
         G->eraseFromParent();
 
-        toRegister.push_back({DataPtr, S});
+        toRegister.push_back({DataPtr, S, isExternal});
         ++globals;
       }
 
@@ -211,9 +247,9 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         Function *Ctor = Function::Create(CtorTy, GlobalValue::InternalLinkage,
                                           "__redzone_global_ctor", &M);
         IRBuilder<> CB(BasicBlock::Create(Ctx, "entry", Ctor));
-        for (auto &PR : toRegister)
-          CB.CreateCall(GlobalRegister,
-                        {PR.first, ConstantInt::get(I64, PR.second)});
+        for (auto [DataPtr, Size, isExternal] : toRegister)
+          CB.CreateCall(isExternal ? GlobalRegisterRight : GlobalRegister,
+                        {DataPtr, ConstantInt::get(I64, Size)});
         CB.CreateRetVoid();
         appendToGlobalCtors(M, Ctor, /*priority=*/0);
       }

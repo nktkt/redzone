@@ -35,6 +35,8 @@ CASES=(
   "calloc_overflow.c:heap-buffer-overflow"
   "realloc_grow.c:OK"
   "global_overflow.c:global-buffer-overflow"
+  "extern_global_valid.c:OK"
+  "extern_global_overflow.c:global-buffer-overflow"
   "aligned_valid.c:OK"
   "aligned_overflow.c:heap-buffer-overflow"
   "cpp_new_valid.cpp:OK"
