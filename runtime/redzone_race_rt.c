@@ -10,27 +10,47 @@
 #include <stdlib.h>
 
 //===----------------------------------------------------------------------===//
-// Global detector state, serialized by one lock.
+// Global detector state.
+//
+// The shadow is SHARDED into RZ_NSHARD independent sub-tables, each with its own
+// lock and keyed by the access address, so threads touching unrelated locations
+// don't serialize on a single mutex (the dominant cost measured by
+// scripts/bench_race.sh). Everything else -- the sync registry, the thread
+// registry, the tid counter, and the report state -- is lower-frequency and
+// shares one `g_meta_lock`. The two lock kinds are NEVER held at the same time
+// (a shard lock is always released before g_meta_lock is taken), so they cannot
+// deadlock. A thread's own vector clock lives in TLS and is touched only by that
+// thread (writes at create happen before the child runs; reads at join happen
+// after it ends), so it needs no lock at all.
 //===----------------------------------------------------------------------===//
 
-static rz_race_state g_state;
-static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+#define RZ_NSHARD 64u // power of two
+static rz_race_state g_shard[RZ_NSHARD];
+static pthread_mutex_t g_shard_lock[RZ_NSHARD];
+static rz_race_state g_meta; // holds only next_tid (no shadow); under g_meta_lock
+static pthread_mutex_t g_meta_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_key_t g_self_key; // TLS: this thread's rz_thread*
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
-static unsigned long g_races;    // total races reported (under g_lock)
+static unsigned long g_races;    // total races reported (under g_meta_lock)
 static int g_verbose;            // report every race, no dedup? (REDZONE_RACE_VERBOSE)
 
-#define LOCK() pthread_mutex_lock(&g_lock)
-#define UNLOCK() pthread_mutex_unlock(&g_lock)
+#define META_LOCK() pthread_mutex_lock(&g_meta_lock)
+#define META_UNLOCK() pthread_mutex_unlock(&g_meta_lock)
+
+// Route an 8-byte word to a shard. A different bit range than find_bucket's hash
+// (which masks the low bits) to decorrelate shard choice from bucket choice.
+static unsigned shard_of(uintptr_t word) {
+  return (unsigned)((word * 0x9E3779B97F4A7C15ull) >> 40) & (RZ_NSHARD - 1);
+}
 
 // Dedup detailed race reports by (line, prev-line) so a hot racy loop prints a
 // handful of distinct reports, not thousands. The exit summary still counts all
-// races. Decided under g_lock; the printing happens after the lock is released.
+// races. Decided under g_meta_lock; the printing happens after the lock is released.
 #define RZ_RACE_REPORT_CAP 16
 static int g_report_lines[RZ_RACE_REPORT_CAP][2];
 static int g_report_n;
 
-static int should_report(int line, int prev_line) { // call under g_lock
+static int should_report(int line, int prev_line) { // call under g_meta_lock
   if (g_verbose)
     return 1;
   for (int i = 0; i < g_report_n; i++)
@@ -141,11 +161,19 @@ static rz_sync *sync_for(uintptr_t key) {
 
 static void init_once(void) {
   pthread_key_create(&g_self_key, NULL); // handles are freed by us, not the key
-  rz_race_state_init(&g_state);
+  // Shard the shadow so total capacity stays ~constant: each shard gets
+  // RZ_RACE_BUCKETS / RZ_NSHARD buckets.
+  for (unsigned i = 0; i < RZ_NSHARD; i++) {
+    rz_race_state_init_n(&g_shard[i], RZ_RACE_BUCKETS / RZ_NSHARD);
+    pthread_mutex_init(&g_shard_lock[i], NULL);
+  }
+  g_meta.buckets = NULL; // g_meta carries only next_tid (no shadow)
+  g_meta.nbuckets = 0;
+  g_meta.next_tid = 0;
   g_verbose = getenv("REDZONE_RACE_VERBOSE") != NULL;
   rz_thread *root = calloc(1, sizeof *root);
   if (root) {
-    rz_thread_init(&g_state, root); // tid 0 = the calling (root) thread
+    rz_thread_init(&g_meta, root); // tid 0 = the calling (root) thread
     pthread_setspecific(g_self_key, root);
   }
 }
@@ -164,9 +192,9 @@ static rz_thread *self(void) {
     s = calloc(1, sizeof *s);
     if (!s)
       return NULL;
-    LOCK();
-    rz_thread_init(&g_state, s);
-    UNLOCK();
+    META_LOCK();
+    rz_thread_init(&g_meta, s);
+    META_UNLOCK();
     pthread_setspecific(g_self_key, s);
   }
   return s;
@@ -201,17 +229,17 @@ int rz_rt_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     free(tr);
     return pthread_create(thread, attr, start_routine, arg); // untracked
   }
-  LOCK();
-  rz_thread_create(&g_state, parent, child); // parent -> child ordering edge
-  UNLOCK();
+  META_LOCK();
+  rz_thread_create(&g_meta, parent, child); // parent -> child ordering edge
+  META_UNLOCK();
   tr->start = start_routine;
   tr->arg = arg;
   tr->self = child;
   int rc = pthread_create(thread, attr, trampoline, tr);
   if (rc == 0) {
-    LOCK();
+    META_LOCK();
     reg_thread(*thread, child);
-    UNLOCK();
+    META_UNLOCK();
   } else {
     free(tr);
     free(child);
@@ -223,11 +251,11 @@ int rz_rt_pthread_join(pthread_t thread, void **retval) {
   rz_thread *parent = self();
   int rc = pthread_join(thread, retval);
   if (rc == 0) {
-    LOCK();
+    META_LOCK();
     rz_thread *child = take_thread(thread);
     if (child)
       rz_thread_join(parent, child); // child -> parent ordering edge
-    UNLOCK();
+    META_UNLOCK();
     free(child);
   }
   return rc;
@@ -241,22 +269,22 @@ void rz_rt_mutex_lock(void *mutex) {
   rz_thread *s = self();
   if (!s)
     return;
-  LOCK();
+  META_LOCK();
   rz_sync *m = sync_for((uintptr_t)mutex);
   if (m)
     rz_mutex_acquire(s, m);
-  UNLOCK();
+  META_UNLOCK();
 }
 
 void rz_rt_mutex_unlock(void *mutex) {
   rz_thread *s = self();
   if (!s)
     return;
-  LOCK();
+  META_LOCK();
   rz_sync *m = sync_for((uintptr_t)mutex);
   if (m)
     rz_mutex_release(s, m);
-  UNLOCK();
+  META_UNLOCK();
 }
 
 int rz_rt_pthread_mutex_lock(pthread_mutex_t *mutex) {
@@ -354,10 +382,16 @@ static void access_range(uintptr_t addr, size_t size, int is_write,
   uintptr_t hit_word = 0;
   rz_access prev; // the conflicting prior access, for the report
   int do_report = 0;
-  LOCK();
+  // Each 8-byte word is checked under its own shard lock, one at a time, so
+  // accesses to unrelated locations run in parallel.
   for (uintptr_t w = first; w <= last; w++) {
+    unsigned sh = shard_of(w);
     rz_access p;
-    if (rz_race_access_loc(&g_state, s, w << 3, is_write, file, line, &p)) {
+    pthread_mutex_lock(&g_shard_lock[sh]);
+    int raced =
+        rz_race_access_loc(&g_shard[sh], s, w << 3, is_write, file, line, &p);
+    pthread_mutex_unlock(&g_shard_lock[sh]);
+    if (raced) {
       if (!hits) {
         hit_word = w << 3;
         prev = p;
@@ -366,12 +400,13 @@ static void access_range(uintptr_t addr, size_t size, int is_write,
     }
   }
   if (hits) {
+    META_LOCK();
     g_races += hits;
     do_report = should_report(line, prev.line);
+    META_UNLOCK();
+    if (do_report)
+      print_race(is_write, tid, hit_word, file, line, &prev);
   }
-  UNLOCK();
-  if (do_report)
-    print_race(is_write, tid, hit_word, file, line, &prev);
 }
 
 void rz_rt_read(const volatile void *addr, size_t size, const char *file,
@@ -385,8 +420,8 @@ void rz_rt_write(const volatile void *addr, size_t size, const char *file,
 }
 
 unsigned long rz_rt_race_count(void) {
-  LOCK();
+  META_LOCK();
   unsigned long r = g_races;
-  UNLOCK();
+  META_UNLOCK();
   return r;
 }

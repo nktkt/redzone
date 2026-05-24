@@ -39,17 +39,25 @@ int rz_race_check(const rz_access *prev, int tid, const rz_vc *cur,
 // State machine: engine + per-thread clocks + per-location shadow + sync events
 //===----------------------------------------------------------------------===//
 
-int rz_race_state_init(rz_race_state *s) {
-  s->buckets = calloc(RZ_RACE_BUCKETS, sizeof *s->buckets);
-  if (!s->buckets)
+int rz_race_state_init_n(rz_race_state *s, size_t nbuckets) {
+  s->buckets = calloc(nbuckets, sizeof *s->buckets);
+  if (!s->buckets) {
+    s->nbuckets = 0;
     return -1;
+  }
+  s->nbuckets = nbuckets;
   s->next_tid = 0;
   return 0;
+}
+
+int rz_race_state_init(rz_race_state *s) {
+  return rz_race_state_init_n(s, RZ_RACE_BUCKETS);
 }
 
 void rz_race_state_destroy(rz_race_state *s) {
   free(s->buckets);
   s->buckets = NULL;
+  s->nbuckets = 0;
   s->next_tid = 0;
 }
 
@@ -64,10 +72,12 @@ void rz_thread_init(rz_race_state *s, rz_thread *t) {
 // returns NULL only if the table is completely full (then the caller skips the
 // access -- a possible missed race, never a false report).
 static rz_bucket *find_bucket(rz_race_state *s, uintptr_t word, int create) {
+  if (!s->buckets)
+    return NULL; // uninitialized / OOM shard: skip (never a false report)
   uintptr_t key = word + 1; // 0 is reserved for "empty"
-  size_t mask = RZ_RACE_BUCKETS - 1;
+  size_t mask = s->nbuckets - 1;
   size_t h = (size_t)(word * 0x9E3779B97F4A7C15ull) & mask;
-  for (size_t i = 0; i < RZ_RACE_BUCKETS; i++) {
+  for (size_t i = 0; i < s->nbuckets; i++) {
     rz_bucket *b = &s->buckets[(h + i) & mask];
     if (b->key == key)
       return b;

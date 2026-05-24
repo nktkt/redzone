@@ -123,24 +123,29 @@ Implication: race detection should be a **distinct mode**, selected at build tim
 two modes can share the pass's instrumentation walk and selective-skip analysis,
 but little else.
 
-**Measured (current implementation).** `scripts/bench_race.sh` times race-free
-microbenchmarks, baseline vs. instrumented, both at `-O1`:
+**Measured.** `scripts/bench_race.sh` times race-free microbenchmarks, baseline
+vs. instrumented, both at `-O1`:
 
-| benchmark | what it stresses | slowdown |
-|---|---|---|
-| `race_serial` | per-access cost, single thread (no contention) | ~11× |
-| `race_contended` | 4 threads on disjoint, padded slots | ~29× |
+| benchmark | what it stresses | before sharding | after sharding |
+|---|---|---|---|
+| `race_serial` | per-access cost, single thread | ~11× | ~11× |
+| `race_contended` | 4 threads on disjoint, padded slots | ~29× | **~4–5×** |
 
-The roughly **2.5× gap** between them is **lock contention**: the runtime
-currently takes one *global* mutex on every instrumented access, so threads
-serialize even when they touch unrelated locations. That single lock — not the
-happens-before math — is the dominant cost at scale, and the clear next
-optimization is to **shard the shadow lock** (independent sub-tables + per-shard
-locks, routed by address) so disjoint accesses proceed in parallel; the
-per-thread clock is already thread-local and needs no lock, and the sync/thread
-registries can keep their own locks. (The benchmarks are race-free, so the script
-also doubles as a correctness gate: the instrumented build must match the
-baseline output and report no race.)
+Originally the runtime took one *global* mutex on every instrumented access, so
+threads serialized even when touching unrelated locations — the ~2.5× gap above
+was pure **lock contention**. The shadow is now **sharded** into `RZ_NSHARD`
+independent sub-tables, each with its own lock and routed by address, so disjoint
+accesses proceed in parallel; this cut the contended slowdown ~6× (≈29×→≈4.5×)
+with memory held constant (each shard is `RZ_RACE_BUCKETS / RZ_NSHARD` buckets).
+The single-thread per-access cost is unchanged — there is no contention to
+relieve there; lowering it further means shrinking the per-access work itself.
+The per-thread vector clock is thread-local (no lock); the sync registry, thread
+registry, and report state share one lower-frequency `g_meta_lock`, and a shard
+lock is never held while taking it (so they cannot deadlock). The runtime's own
+freedom from data races is checked by building it under **ThreadSanitizer**
+(`scripts/test_race_tsan.sh`). The benchmarks are race-free, so `bench_race.sh`
+also doubles as a correctness gate (instrumented output must match the baseline
+and report no race).
 
 ## Risks & open questions
 

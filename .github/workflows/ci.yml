@@ -70,6 +70,12 @@ jobs:
         # timing-independent, so every run must pass (a flaky run fails CI).
         run: ./scripts/test_race_runtime.sh
 
+      - name: Race-runtime under ThreadSanitizer
+        # Builds the detector runtime + a race-free concurrent driver under TSan:
+        # any warning means the sharded-shadow locking has an internal data race.
+        # Skips cleanly if TSan is unavailable on the toolchain.
+        run: ./scripts/test_race_tsan.sh
+
       - name: Race-mode end-to-end test
         # Full path: the pass auto-emits the access/sync hooks (-redzone-race),
         # linked against the race runtime. A racy program must be flagged, a
