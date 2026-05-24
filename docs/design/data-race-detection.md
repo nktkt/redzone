@@ -126,24 +126,32 @@ but little else.
 **Measured.** `scripts/bench_race.sh` times race-free microbenchmarks, baseline
 vs. instrumented, both at `-O1`:
 
-| benchmark | what it stresses | before sharding | after sharding |
+| benchmark | what it stresses | global lock | sharded |
 |---|---|---|---|
 | `race_serial` | per-access cost, single thread | ~11× | ~11× |
-| `race_contended` | 4 threads on disjoint, padded slots | ~29× | **~4–5×** |
+| `race_contended` | 4 threads, disjoint plain slots | ~29× | **~4–5×** |
+| `race_atomic_contended` | 4 threads, disjoint atomic counters | ~47× | **~5×** |
 
-Originally the runtime took one *global* mutex on every instrumented access, so
-threads serialized even when touching unrelated locations — the ~2.5× gap above
-was pure **lock contention**. The shadow is now **sharded** into `RZ_NSHARD`
-independent sub-tables, each with its own lock and routed by address, so disjoint
-accesses proceed in parallel; this cut the contended slowdown ~6× (≈29×→≈4.5×)
-with memory held constant (each shard is `RZ_RACE_BUCKETS / RZ_NSHARD` buckets).
-The single-thread per-access cost is unchanged — there is no contention to
-relieve there; lowering it further means shrinking the per-access work itself.
-The per-thread vector clock is thread-local (no lock); the sync registry, thread
-registry, and report state share one lower-frequency `g_meta_lock`, and a shard
-lock is never held while taking it (so they cannot deadlock). The runtime's own
-freedom from data races is checked by building it under **ThreadSanitizer**
-(`scripts/test_race_tsan.sh`). The benchmarks are race-free, so `bench_race.sh`
+Originally one *global* mutex was taken on every instrumented access **and** every
+synchronization event, so threads serialized even on unrelated data. Two
+independent shardings remove that, each routed by address with its own lock and
+keeping total memory constant:
+
+- the **shadow** is split into `RZ_NSHARD` sub-tables (each `RZ_RACE_BUCKETS /
+  RZ_NSHARD` buckets) — this decongests plain accesses (`race_contended`);
+- the **sync registry** is split into `RZ_NSYNC` sub-registries, keyed by object
+  address — this decongests locks, condvars, and **atomics** (each atomic op is a
+  release/acquire on the location's sync object), fixing the worst case,
+  `race_atomic_contended`.
+
+What remains is the single-thread per-access cost (~11×): there's no contention
+to relieve there, so lowering it means shrinking the per-access work itself. The
+per-thread vector clock is thread-local (no lock); the thread registry, tid
+counter, and report state share one low-frequency `g_meta_lock`. The lock kinds
+(shadow shard, sync shard, meta) are never nested, so they cannot deadlock. The
+runtime's own freedom from data races is checked by building it under
+**ThreadSanitizer** (`scripts/test_race_tsan.sh`, exercising the shadow, mutex,
+and atomic paths concurrently). The benchmarks are race-free, so `bench_race.sh`
 also doubles as a correctness gate (instrumented output must match the baseline
 and report no race).
 

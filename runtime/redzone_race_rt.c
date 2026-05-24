@@ -126,30 +126,48 @@ static rz_thread *take_thread(pthread_t thr) {
 }
 
 //===----------------------------------------------------------------------===//
-// mutex-address -> rz_sync registry. Grow-only; all access under g_lock.
+// address -> rz_sync registry, SHARDED. Each lock/atomic/cond object lives in
+// one shard (keyed by its address); a shard's grow-only array and clocks are
+// protected by that shard's lock. Sharding keeps unrelated locks and atomics
+// from serializing on a single registry lock -- the same parallelism win as the
+// shadow shards, but for synchronization (notably atomic-heavy lock-free code).
 //===----------------------------------------------------------------------===//
 
+#define RZ_NSYNC 16u // power of two
+
 typedef struct {
-  uintptr_t key; // mutex address; 0 means empty slot
+  uintptr_t key; // object address
   rz_sync sync;
 } rz_sync_ent;
 
-static rz_sync_ent *g_syncs;
-static size_t g_syncs_cap, g_syncs_len;
+typedef struct {
+  rz_sync_ent *ents;
+  size_t cap, len;
+} rz_sync_shard;
 
-static rz_sync *sync_for(uintptr_t key) {
-  for (size_t i = 0; i < g_syncs_len; i++)
-    if (g_syncs[i].key == key)
-      return &g_syncs[i].sync;
-  if (g_syncs_len == g_syncs_cap) {
-    size_t cap = g_syncs_cap ? g_syncs_cap * 2 : 16;
-    rz_sync_ent *grown = realloc(g_syncs, cap * sizeof *grown);
+static rz_sync_shard g_sync[RZ_NSYNC];
+static pthread_mutex_t g_sync_lock[RZ_NSYNC];
+
+static unsigned sync_shard_of(uintptr_t key) {
+  return (unsigned)((key * 0x9E3779B97F4A7C15ull) >> 36) & (RZ_NSYNC - 1);
+}
+
+// Find-or-create the sync object for `key` within shard `sh`. Call under the
+// shard's lock; the returned pointer is valid only until the lock is released
+// (a later insert may realloc the array).
+static rz_sync *sync_for_in(rz_sync_shard *sh, uintptr_t key) {
+  for (size_t i = 0; i < sh->len; i++)
+    if (sh->ents[i].key == key)
+      return &sh->ents[i].sync;
+  if (sh->len == sh->cap) {
+    size_t cap = sh->cap ? sh->cap * 2 : 8;
+    rz_sync_ent *grown = realloc(sh->ents, cap * sizeof *grown);
     if (!grown)
       return NULL; // OOM: caller skips the edge (may miss races, never invents)
-    g_syncs = grown;
-    g_syncs_cap = cap;
+    sh->ents = grown;
+    sh->cap = cap;
   }
-  rz_sync_ent *e = &g_syncs[g_syncs_len++];
+  rz_sync_ent *e = &sh->ents[sh->len++];
   e->key = key;
   rz_sync_init(&e->sync);
   return &e->sync;
@@ -167,6 +185,8 @@ static void init_once(void) {
     rz_race_state_init_n(&g_shard[i], RZ_RACE_BUCKETS / RZ_NSHARD);
     pthread_mutex_init(&g_shard_lock[i], NULL);
   }
+  for (unsigned i = 0; i < RZ_NSYNC; i++)
+    pthread_mutex_init(&g_sync_lock[i], NULL);
   g_meta.buckets = NULL; // g_meta carries only next_tid (no shadow)
   g_meta.nbuckets = 0;
   g_meta.next_tid = 0;
@@ -269,22 +289,24 @@ void rz_rt_mutex_lock(void *mutex) {
   rz_thread *s = self();
   if (!s)
     return;
-  META_LOCK();
-  rz_sync *m = sync_for((uintptr_t)mutex);
+  unsigned sh = sync_shard_of((uintptr_t)mutex);
+  pthread_mutex_lock(&g_sync_lock[sh]);
+  rz_sync *m = sync_for_in(&g_sync[sh], (uintptr_t)mutex);
   if (m)
     rz_mutex_acquire(s, m);
-  META_UNLOCK();
+  pthread_mutex_unlock(&g_sync_lock[sh]);
 }
 
 void rz_rt_mutex_unlock(void *mutex) {
   rz_thread *s = self();
   if (!s)
     return;
-  META_LOCK();
-  rz_sync *m = sync_for((uintptr_t)mutex);
+  unsigned sh = sync_shard_of((uintptr_t)mutex);
+  pthread_mutex_lock(&g_sync_lock[sh]);
+  rz_sync *m = sync_for_in(&g_sync[sh], (uintptr_t)mutex);
   if (m)
     rz_mutex_release(s, m);
-  META_UNLOCK();
+  pthread_mutex_unlock(&g_sync_lock[sh]);
 }
 
 int rz_rt_pthread_mutex_lock(pthread_mutex_t *mutex) {
