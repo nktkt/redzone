@@ -923,6 +923,48 @@ void *__redzone_memset(void *dst, int c, size_t n, const char *file, int line) {
 }
 
 //===----------------------------------------------------------------------===//
+// String copies (strcpy / strcat / strncpy / strncat).
+//
+// Same idea as the mem* wrappers, but the access length is implicit, so we
+// derive it with strlen/strnlen and bounds-check the resulting ranges. NOTE: we
+// must call strlen on the source before checking it; for the common bug (a valid
+// source copied into a too-small destination) the source is terminated and this
+// is safe, and an over-read of an unterminated source is then itself reported.
+//===----------------------------------------------------------------------===//
+
+char *__redzone_strcpy(char *dst, const char *src, const char *file, int line) {
+  size_t n = strlen(src) + 1; // bytes read from src and written to dst (incl NUL)
+  __redzone_check(src, n, /*is_write=*/0, file, line);
+  __redzone_check(dst, n, /*is_write=*/1, file, line);
+  return strcpy(dst, src);
+}
+
+char *__redzone_strcat(char *dst, const char *src, const char *file, int line) {
+  size_t dl = strlen(dst);    // strcat scans dst to its NUL, then appends there
+  size_t sl = strlen(src) + 1;
+  __redzone_check(src, sl, /*is_write=*/0, file, line);
+  __redzone_check(dst, dl + sl, /*is_write=*/1, file, line);
+  return strcat(dst, src);
+}
+
+char *__redzone_strncpy(char *dst, const char *src, size_t n, const char *file,
+                        int line) {
+  __redzone_check(dst, n, /*is_write=*/1, file, line); // writes exactly n bytes
+  size_t sl = strnlen(src, n);
+  __redzone_check(src, (sl < n) ? sl + 1 : n, /*is_write=*/0, file, line);
+  return strncpy(dst, src, n);
+}
+
+char *__redzone_strncat(char *dst, const char *src, size_t n, const char *file,
+                        int line) {
+  size_t dl = strlen(dst);
+  size_t sl = strnlen(src, n); // appends up to n bytes, then a NUL
+  __redzone_check(src, sl, /*is_write=*/0, file, line);
+  __redzone_check(dst, dl + sl + 1, /*is_write=*/1, file, line);
+  return strncat(dst, src, n);
+}
+
+//===----------------------------------------------------------------------===//
 // Leak suppressions
 //===----------------------------------------------------------------------===//
 //
