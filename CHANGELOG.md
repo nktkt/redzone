@@ -9,6 +9,15 @@ development milestones that led to it (the commit history references them).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.22.0] — 2026-05-24
+
+Closes the bulk- and string-copy overflow gaps in the memory-safety checker:
+out-of-bounds writes through `mem*`/`str*` calls — which the per-access
+instrumentation can't see (each is one opaque call) — are now detected. No
+behavior change for existing in-bounds code; the pass/runtime ABI is additive.
+
 ### Added
 - **String-copy bounds checking**: `strcpy`, `strcat`, `strncpy`, `strncat`,
   `strlcpy`, and `strlcat` (and their fortified `__*_chk` forms) are intercepted;

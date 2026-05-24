@@ -293,8 +293,10 @@ and write), double-free, and invalid-free, plus several valid programs.
 **global-buffer-overflow**, **use-after-free**, **double-free**, **invalid-free**
 and **memory leaks** across the full C/C++ allocator surface —
 `malloc`/`calloc`/`realloc`/`free`, `aligned_alloc`/`posix_memalign`, and C++
-`new`/`new[]`/`delete`/`delete[]` (including the C++17 aligned forms) — reporting
-the faulting `file:line` and a
+`new`/`new[]`/`delete`/`delete[]` (including the C++17 aligned forms) — and
+catches out-of-bounds writes through the **bulk-memory and string functions**
+(`memcpy`/`memmove`/`memset`, `strcpy`/`strcat`/`strncpy`/`strncat`/`strlcpy`/
+`strlcat`), reporting the faulting `file:line` and a
 **symbolized stack trace** (plus the allocation site for heap bugs). The
 per-access check uses **shadow memory** (O(1)). Globals are covered whether
 static/internal or external (cross-TU), and the runtime is **thread-safe** (safe
