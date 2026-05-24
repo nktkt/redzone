@@ -9,6 +9,13 @@ development milestones that led to it (the commit history references them).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.24.0] — 2026-05-24
+
+A correctness improvement found by dog-fooding redzone on real libraries, plus
+the validation record. Additive; no behavior change for existing code.
+
 ### Added
 - **Indirect-allocator coverage**: allocations made through a function pointer —
   the common pluggable-allocator pattern of taking the *address* of `malloc` and
@@ -20,6 +27,9 @@ development milestones that led to it (the commit history references them).
   hooks default to `{ malloc, free, realloc }`): redzone now both runs clean on a
   full parse/mutate/serialize workload and catches an injected overflow on
   cJSON's heap. Verified by `examples/indirect_malloc.c`.
+- **Real-world validation record** ([`docs/real-world-validation.md`](docs/real-world-validation.md)):
+  redzone is dog-fooded on cJSON, inih, and stb_ds — each builds, runs clean on a
+  realistic workload, and is confirmed to catch an injected overflow on its heap.
 
 ## [0.23.0] — 2026-05-24
 
