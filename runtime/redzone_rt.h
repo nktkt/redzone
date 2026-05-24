@@ -50,6 +50,17 @@ int __redzone_posix_memalign(void **memptr, size_t alignment, size_t size,
 void __redzone_check(const void *addr, size_t size, int is_write,
                      const char *file, int line);
 
+// Bounds-checking wrappers for the bulk memory ops. The pass redirects memcpy /
+// memmove / memset calls and their llvm.* intrinsics here so an out-of-bounds
+// range -- which the per-access checks can't see (one opaque call) -- is caught.
+// They validate the destination (and, for copies, the source) range, then call
+// the real operation; each returns the destination, matching the C functions.
+void *__redzone_memcpy(void *dst, const void *src, size_t n, const char *file,
+                       int line);
+void *__redzone_memmove(void *dst, const void *src, size_t n, const char *file,
+                        int line);
+void *__redzone_memset(void *dst, int c, size_t n, const char *file, int line);
+
 // Poison/unpoison the red zones around an enlarged stack allocation. The pass
 // calls __redzone_stack_enter at function entry and __redzone_stack_leave
 // before each return. `base` points at the enlarged allocation; `user_size` is

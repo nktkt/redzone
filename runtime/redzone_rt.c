@@ -891,6 +891,38 @@ void __redzone_check(const void *addr, size_t size, int is_write,
 }
 
 //===----------------------------------------------------------------------===//
+// Bulk memory intrinsics (memcpy / memmove / memset).
+//
+// These are single libc/intrinsic calls, so the per-load/store instrumentation
+// never sees the bytes they touch -- an overflow via memcpy would go undetected.
+// We bounds-check the whole destination range (and, for copies, the source) by
+// reusing __redzone_check, which re-validates the first and last byte (sufficient
+// for a contiguous range against the red-zone model) and reports/aborts on a
+// violation; a clean range is a no-op. Then we perform the real operation. The
+// runtime is compiled without the pass, so these `memcpy`/`memset` calls go
+// straight to libc and don't recurse.
+//===----------------------------------------------------------------------===//
+
+void *__redzone_memcpy(void *dst, const void *src, size_t n, const char *file,
+                       int line) {
+  __redzone_check(dst, n, /*is_write=*/1, file, line);
+  __redzone_check(src, n, /*is_write=*/0, file, line);
+  return memcpy(dst, src, n);
+}
+
+void *__redzone_memmove(void *dst, const void *src, size_t n, const char *file,
+                        int line) {
+  __redzone_check(dst, n, /*is_write=*/1, file, line);
+  __redzone_check(src, n, /*is_write=*/0, file, line);
+  return memmove(dst, src, n);
+}
+
+void *__redzone_memset(void *dst, int c, size_t n, const char *file, int line) {
+  __redzone_check(dst, n, /*is_write=*/1, file, line);
+  return memset(dst, c, n);
+}
+
+//===----------------------------------------------------------------------===//
 // Leak suppressions
 //===----------------------------------------------------------------------===//
 //

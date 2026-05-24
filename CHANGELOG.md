@@ -9,7 +9,17 @@ development milestones that led to it (the commit history references them).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **Bulk-memory bounds checking**: `memcpy`, `memmove`, and `memset` — including
+  the `llvm.mem*` intrinsics the compiler lowers them to and the fortified
+  `__memcpy_chk` / `__memmove_chk` / `__memset_chk` forms — are now intercepted,
+  and their destination range (and, for copies, the source range) is bounds-
+  checked against the shadow before the real operation runs. Previously an
+  overflow through one of these single opaque calls (e.g. `memcpy` into a
+  too-small `malloc`) went undetected; now it is caught and classified
+  (heap/stack/global overflow, or use-after-free) like any other access. Verified
+  by `examples/memcpy_overflow.c`, `examples/memset_overflow.c`, and
+  `examples/memcpy_valid.c`.
 
 ## [0.21.0] — 2026-05-24
 

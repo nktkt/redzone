@@ -32,6 +32,7 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -137,6 +138,12 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         "__redzone_aligned_alloc", PtrTy, I64, I64, PtrTy, I32);
     FunctionCallee RzPosixMemalign = M.getOrInsertFunction(
         "__redzone_posix_memalign", I32, PtrTy, I64, I64, PtrTy, I32);
+    FunctionCallee RzMemcpy = M.getOrInsertFunction(
+        "__redzone_memcpy", PtrTy, PtrTy, PtrTy, I64, PtrTy, I32);
+    FunctionCallee RzMemmove = M.getOrInsertFunction(
+        "__redzone_memmove", PtrTy, PtrTy, PtrTy, I64, PtrTy, I32);
+    FunctionCallee RzMemset = M.getOrInsertFunction(
+        "__redzone_memset", PtrTy, PtrTy, I32, I64, PtrTy, I32);
     FunctionCallee GlobalRegister =
         M.getOrInsertFunction("__redzone_global_register", VoidTy, PtrTy, I64);
     FunctionCallee GlobalRegisterRight = M.getOrInsertFunction(
@@ -208,7 +215,7 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
     };
 
     unsigned checks = 0, mallocs = 0, frees = 0, stackVars = 0, globals = 0;
-    unsigned skippedSafe = 0, skippedRedundant = 0, optedOutFns = 0;
+    unsigned skippedSafe = 0, skippedRedundant = 0, optedOutFns = 0, memops = 0;
 
     // Ignore-list: exclude functions/source files matching REDZONE_IGNORELIST
     // rules (like the per-function attribute, but for code you can't annotate).
@@ -343,6 +350,12 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       // C++ new (size arg, like malloc) and delete (ptr arg, like free);
       // alignedNewCalls are C++17 aligned new (size, align) -> aligned_alloc.
       SmallVector<CallInst *, 4> newCalls, alignedNewCalls, deleteCalls;
+      // Bulk memory ops: the llvm.mem* intrinsics (the usual form clang emits)
+      // and plain memcpy/memmove/memset calls (rare; only when not lowered).
+      SmallVector<MemCpyInst *, 4> memCpyOps;
+      SmallVector<MemMoveInst *, 4> memMoveOps;
+      SmallVector<MemSetInst *, 4> memSetOps;
+      SmallVector<CallInst *, 4> memCpyCalls, memMoveCalls, memSetCalls;
       SmallVector<AllocaInst *, 8> allocas;
       SmallVector<ReturnInst *, 4> returns;
 
@@ -350,11 +363,26 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         for (Instruction &I : BB) {
           if (isa<LoadInst>(I) || isa<StoreInst>(I)) {
             accesses.push_back(&I);
+          } else if (auto *MI = dyn_cast<MemCpyInst>(&I)) {
+            memCpyOps.push_back(MI); // llvm.memcpy (and .inline)
+          } else if (auto *MI = dyn_cast<MemMoveInst>(&I)) {
+            memMoveOps.push_back(MI);
+          } else if (auto *MI = dyn_cast<MemSetInst>(&I)) {
+            memSetOps.push_back(MI);
           } else if (auto *CI = dyn_cast<CallInst>(&I)) {
             if (Function *Callee = CI->getCalledFunction()) {
               StringRef N = Callee->getName();
               if (N == "malloc")
                 mallocCalls.push_back(CI);
+              // Plain calls and the fortified __*_chk forms (macOS/glibc rewrite
+              // memcpy/memset to these). The _chk forms carry a 4th object-size
+              // arg we ignore -- the shadow knows the real allocation size.
+              else if (N == "memcpy" || N == "__memcpy_chk")
+                memCpyCalls.push_back(CI);
+              else if (N == "memmove" || N == "__memmove_chk")
+                memMoveCalls.push_back(CI);
+              else if (N == "memset" || N == "__memset_chk")
+                memSetCalls.push_back(CI);
               else if (N == "calloc")
                 callocCalls.push_back(CI);
               else if (N == "realloc")
@@ -608,15 +636,68 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
                               ConstantInt::get(I32, IsWrite ? 1 : 0), FileC, LineC});
         ++checks;
       }
+
+      // Bounds-check bulk memory ops. The intrinsics are void and do the copy
+      // themselves, so we REPLACE each with a call to the checking wrapper (which
+      // performs the real op); named calls return the destination, so we rebuild
+      // and RAUW. The length is normalized to i64.
+      auto i64Len = [&](IRBuilder<> &B, Value *Len) -> Value * {
+        return B.CreateZExtOrTrunc(Len, I64);
+      };
+      for (MemCpyInst *MI : memCpyOps) {
+        IRBuilder<> B(MI);
+        auto [FileC, LineC] = getLoc(B, MI);
+        B.CreateCall(RzMemcpy, {MI->getRawDest(), MI->getRawSource(),
+                                i64Len(B, MI->getLength()), FileC, LineC});
+        MI->eraseFromParent();
+        ++memops;
+      }
+      for (MemMoveInst *MI : memMoveOps) {
+        IRBuilder<> B(MI);
+        auto [FileC, LineC] = getLoc(B, MI);
+        B.CreateCall(RzMemmove, {MI->getRawDest(), MI->getRawSource(),
+                                 i64Len(B, MI->getLength()), FileC, LineC});
+        MI->eraseFromParent();
+        ++memops;
+      }
+      for (MemSetInst *MI : memSetOps) {
+        IRBuilder<> B(MI);
+        auto [FileC, LineC] = getLoc(B, MI);
+        Value *C = B.CreateZExtOrTrunc(MI->getValue(), I32);
+        B.CreateCall(RzMemset, {MI->getRawDest(), C, i64Len(B, MI->getLength()),
+                                FileC, LineC});
+        MI->eraseFromParent();
+        ++memops;
+      }
+      auto redirectMemCall = [&](CallInst *CI, FunctionCallee Fn, bool isSet) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        Value *Arg1 = isSet ? B.CreateZExtOrTrunc(CI->getArgOperand(1), I32)
+                            : CI->getArgOperand(1);
+        Value *Len = i64Len(B, CI->getArgOperand(2));
+        CallInst *NewCI = B.CreateCall(
+            Fn, {CI->getArgOperand(0), Arg1, Len, FileC, LineC});
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++memops;
+      };
+      for (CallInst *CI : memCpyCalls)
+        redirectMemCall(CI, RzMemcpy, /*isSet=*/false);
+      for (CallInst *CI : memMoveCalls)
+        redirectMemCall(CI, RzMemmove, /*isSet=*/false);
+      for (CallInst *CI : memSetCalls)
+        redirectMemCall(CI, RzMemset, /*isSet=*/true);
     }
 
     errs() << "[redzone] instrumented " << checks << " access(es) (skipped "
            << skippedSafe << " safe + " << skippedRedundant << " redundant); "
            << stackVars << " stack var(s); " << globals << " global(s); redirected "
-           << mallocs << " alloc / " << frees << " free call(s); " << optedOutFns
-           << " opted-out fn(s)\n";
+           << mallocs << " alloc / " << frees << " free call(s) / " << memops
+           << " mem op(s); " << optedOutFns << " opted-out fn(s)\n";
 
-    bool Changed = checks || mallocs || frees || stackVars || globals;
+    bool Changed =
+        checks || mallocs || frees || stackVars || globals || memops;
     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
   }
 
