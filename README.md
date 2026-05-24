@@ -304,8 +304,10 @@ output, **leak suppressions**, instrumentation **opt-outs** (a
 `REDZONE_NO_INSTRUMENT` attribute and a `REDZONE_IGNORELIST` file), CMake & Make
 integration, and a 28-case suite plus format, cross-TU, report, opt-out,
 ignore-list, determinism, ccache, sccache, integration, performance-regression,
-and race-engine checks in CI. Remaining gaps: *detecting* data races and
-underflow of an external global.
+and data-race (engine, runtime, and end-to-end) checks in CI. It also has an
+opt-in, experimental **[data-race detector](#data-race-detection)** (`--race`
+mode, happens-before). Remaining gaps: underflow of an external global, and
+performance tuning of the race mode.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
 the allocator path is **O(1)** per `malloc`/`free` (each block finds its metadata
