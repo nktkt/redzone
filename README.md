@@ -8,6 +8,8 @@
 
 The name comes from the *red zones*: poisoned guard regions placed around every heap allocation. Step outside an allocation and you land in a red zone, and `redzone` reports exactly where it happened.
 
+**New here?** Start with the **[tutorial](docs/tutorial.md)** — find your first bug in five minutes.
+
 ## What it detects
 
 | Detected ✅ | Out of scope (for now) ❌ |
