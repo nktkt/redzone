@@ -42,8 +42,40 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h> // isatty, for color auto-detection
+#if defined(__APPLE__)
+#include <malloc/malloc.h> // malloc_zone_* : the system allocator, bypassing any
+                           // dyld interpose of the malloc symbol (see rz_sys_*)
+#endif
 
 #define REDZONE_SIZE 16 // guard bytes on each side of an allocation
+
+// The runtime's OWN allocations must reach the real system allocator even when
+// the malloc symbol is interposed process-wide (the whole-process interposition
+// mode, runtime/redzone_interpose.c) -- otherwise __redzone_malloc would recurse
+// into itself. On macOS the default malloc zone is reached through a function
+// pointer the interpose doesn't replace; elsewhere plain malloc is fine (no
+// interpose). These are equivalent to malloc/realloc/free in normal builds.
+static void *rz_sys_malloc(size_t n) {
+#if defined(__APPLE__)
+  return malloc_zone_malloc(malloc_default_zone(), n);
+#else
+  return malloc(n);
+#endif
+}
+void *rz_sys_realloc(void *p, size_t n) {
+#if defined(__APPLE__)
+  return malloc_zone_realloc(malloc_default_zone(), p, n);
+#else
+  return realloc(p, n);
+#endif
+}
+void rz_sys_free(void *p) {
+#if defined(__APPLE__)
+  malloc_zone_free(malloc_default_zone(), p);
+#else
+  free(p);
+#endif
+}
 
 // Shadow byte encoding (signed):
 //   0        all 8 bytes of the chunk are addressable
@@ -121,7 +153,7 @@ static size_t record_block(uintptr_t real_base, size_t total_size,
                            const char *file, int line) {
   if (g_count == g_cap) {
     size_t new_cap = g_cap ? g_cap * 2 : 64;
-    Block *n = (Block *)realloc(g_blocks, new_cap * sizeof(Block));
+    Block *n = (Block *)rz_sys_realloc(g_blocks, new_cap * sizeof(Block));
     if (!n) {
       fprintf(stderr, "redzone: out of memory tracking allocations\n");
       abort();
@@ -244,6 +276,32 @@ static Block *block_from_user_ptr(void *ptr) {
     return NULL;
   Block *b = &g_blocks[h->index];
   return b->user_addr == u ? b : NULL;
+}
+
+// Public: is `ptr` the user pointer of a live-or-quarantined redzone block? Used
+// by the whole-process interposer to route foreign pointers (allocated before
+// the interposer was active, or by another zone) to the real allocator instead
+// of erroring. Takes the table lock; never aborts.
+int __redzone_owns(const void *ptr) {
+  if (!ptr)
+    return 0;
+  TABLE_LOCK();
+  int owned = block_from_user_ptr((void *)ptr) != NULL;
+  TABLE_UNLOCK();
+  return owned;
+}
+
+// The user-visible size of a redzone block (0 if we don't own `ptr`). The
+// interposer's malloc-zone `size` callback returns this so macOS allocation
+// introspection (malloc_size, malloc_zone_from_ptr, objc) recognizes our blocks.
+size_t __redzone_usable_size(const void *ptr) {
+  if (!ptr)
+    return 0;
+  TABLE_LOCK();
+  Block *b = block_from_user_ptr((void *)ptr);
+  size_t sz = b ? b->user_size : 0;
+  TABLE_UNLOCK();
+  return sz;
 }
 
 //===----------------------------------------------------------------------===//
@@ -580,7 +638,7 @@ static void *rz_allocate(size_t size, size_t align, const char *file, int line) 
   if (size > SIZE_MAX - 2 * REDZONE_SIZE - slack)
     return NULL; // size computation would overflow
   size_t total = size + 2 * REDZONE_SIZE + slack;
-  unsigned char *base = (unsigned char *)malloc(total);
+  unsigned char *base = (unsigned char *)rz_sys_malloc(total);
   if (!base)
     return NULL;
 
