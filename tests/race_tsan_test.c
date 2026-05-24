@@ -19,6 +19,7 @@
 // (and, via the hash, different shards).
 static long slots[NT * 8];
 static long shared;
+static long shared_atomic; // touched via the atomic sync path by all threads
 static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 
 static void *worker(void *p) {
@@ -31,6 +32,9 @@ static void *worker(void *p) {
     rz_rt_write(&shared, sizeof shared, __FILE__, __LINE__); // mutex-ordered
     shared += 1;
     rz_rt_pthread_mutex_unlock(&mtx);
+    // Exercise the atomic -> sync-shard path concurrently from every thread.
+    rz_rt_atomic_release(&shared_atomic);
+    rz_rt_atomic_acquire(&shared_atomic);
   }
   return NULL;
 }
