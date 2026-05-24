@@ -76,6 +76,12 @@ jobs:
         # mutex-protected one must run clean (no false positive). Run repeatedly.
         run: ./scripts/test_race_e2e.sh
 
+      - name: Race-mode benchmark (correctness + perf numbers)
+        # Times race mode vs baseline on race-free microbenchmarks. Perf is
+        # informational (heavy opt-in mode); the gate is correctness -- the
+        # instrumented build must match the baseline and report no race.
+        run: ./scripts/bench_race.sh
+
       - name: Reproducible-build (determinism) check
         # Instrumenting the same source twice must yield byte-identical objects --
         # the prerequisite for compiler caches and reproducible builds.
