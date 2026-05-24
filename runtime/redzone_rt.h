@@ -61,6 +61,17 @@ void *__redzone_memmove(void *dst, const void *src, size_t n, const char *file,
                         int line);
 void *__redzone_memset(void *dst, int c, size_t n, const char *file, int line);
 
+// String-copy wrappers: the access length is implicit (NUL-terminated), so these
+// derive it with strlen/strnlen and bounds-check the destination (and source)
+// before doing the real copy. The pass redirects strcpy/strcat/strncpy/strncat
+// and their fortified __*_chk forms here. Each returns the destination.
+char *__redzone_strcpy(char *dst, const char *src, const char *file, int line);
+char *__redzone_strcat(char *dst, const char *src, const char *file, int line);
+char *__redzone_strncpy(char *dst, const char *src, size_t n, const char *file,
+                        int line);
+char *__redzone_strncat(char *dst, const char *src, size_t n, const char *file,
+                        int line);
+
 // Poison/unpoison the red zones around an enlarged stack allocation. The pass
 // calls __redzone_stack_enter at function entry and __redzone_stack_leave
 // before each return. `base` points at the enlarged allocation; `user_size` is

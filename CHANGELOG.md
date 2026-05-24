@@ -10,6 +10,13 @@ development milestones that led to it (the commit history references them).
 ## [Unreleased]
 
 ### Added
+- **String-copy bounds checking**: `strcpy`, `strcat`, `strncpy`, and `strncat`
+  (and their fortified `__strcpy_chk` / `__strcat_chk` / `__strncpy_chk` /
+  `__strncat_chk` forms) are intercepted; the wrapper derives the access length
+  with `strlen`/`strnlen` and bounds-checks the destination (and source) range
+  before the real copy. An overflow such as `strcpy` of a too-long string into a
+  small buffer is now caught and classified. Verified by
+  `examples/str{cpy,cat,ncpy}_overflow.c` and `examples/str_valid.c`.
 - **Bulk-memory bounds checking**: `memcpy`, `memmove`, and `memset` — including
   the `llvm.mem*` intrinsics the compiler lowers them to and the fortified
   `__memcpy_chk` / `__memmove_chk` / `__memset_chk` forms — are now intercepted,

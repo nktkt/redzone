@@ -144,6 +144,14 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         "__redzone_memmove", PtrTy, PtrTy, PtrTy, I64, PtrTy, I32);
     FunctionCallee RzMemset = M.getOrInsertFunction(
         "__redzone_memset", PtrTy, PtrTy, I32, I64, PtrTy, I32);
+    FunctionCallee RzStrcpy = M.getOrInsertFunction(
+        "__redzone_strcpy", PtrTy, PtrTy, PtrTy, PtrTy, I32);
+    FunctionCallee RzStrcat = M.getOrInsertFunction(
+        "__redzone_strcat", PtrTy, PtrTy, PtrTy, PtrTy, I32);
+    FunctionCallee RzStrncpy = M.getOrInsertFunction(
+        "__redzone_strncpy", PtrTy, PtrTy, PtrTy, I64, PtrTy, I32);
+    FunctionCallee RzStrncat = M.getOrInsertFunction(
+        "__redzone_strncat", PtrTy, PtrTy, PtrTy, I64, PtrTy, I32);
     FunctionCallee GlobalRegister =
         M.getOrInsertFunction("__redzone_global_register", VoidTy, PtrTy, I64);
     FunctionCallee GlobalRegisterRight = M.getOrInsertFunction(
@@ -356,6 +364,10 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       SmallVector<MemMoveInst *, 4> memMoveOps;
       SmallVector<MemSetInst *, 4> memSetOps;
       SmallVector<CallInst *, 4> memCpyCalls, memMoveCalls, memSetCalls;
+      // String copies: 2-arg (strcpy/strcat) and 3-arg (strncpy/strncat), plus
+      // their fortified __*_chk forms.
+      SmallVector<CallInst *, 4> strCpyCalls, strCatCalls, strNCpyCalls,
+          strNCatCalls;
       SmallVector<AllocaInst *, 8> allocas;
       SmallVector<ReturnInst *, 4> returns;
 
@@ -383,6 +395,14 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
                 memMoveCalls.push_back(CI);
               else if (N == "memset" || N == "__memset_chk")
                 memSetCalls.push_back(CI);
+              else if (N == "strcpy" || N == "__strcpy_chk")
+                strCpyCalls.push_back(CI);
+              else if (N == "strcat" || N == "__strcat_chk")
+                strCatCalls.push_back(CI);
+              else if (N == "strncpy" || N == "__strncpy_chk")
+                strNCpyCalls.push_back(CI);
+              else if (N == "strncat" || N == "__strncat_chk")
+                strNCatCalls.push_back(CI);
               else if (N == "calloc")
                 callocCalls.push_back(CI);
               else if (N == "realloc")
@@ -688,6 +708,32 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         redirectMemCall(CI, RzMemmove, /*isSet=*/false);
       for (CallInst *CI : memSetCalls)
         redirectMemCall(CI, RzMemset, /*isSet=*/true);
+
+      // String copies. The wrapper derives the length, so we forward only the
+      // pointers (and the count for the strn* forms), dropping any __*_chk size.
+      auto redirectStr = [&](CallInst *CI, FunctionCallee Fn, bool hasN) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        SmallVector<Value *, 5> args = {CI->getArgOperand(0),
+                                        CI->getArgOperand(1)};
+        if (hasN)
+          args.push_back(i64Len(B, CI->getArgOperand(2)));
+        args.push_back(FileC);
+        args.push_back(LineC);
+        CallInst *NewCI = B.CreateCall(Fn, args);
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++memops;
+      };
+      for (CallInst *CI : strCpyCalls)
+        redirectStr(CI, RzStrcpy, /*hasN=*/false);
+      for (CallInst *CI : strCatCalls)
+        redirectStr(CI, RzStrcat, /*hasN=*/false);
+      for (CallInst *CI : strNCpyCalls)
+        redirectStr(CI, RzStrncpy, /*hasN=*/true);
+      for (CallInst *CI : strNCatCalls)
+        redirectStr(CI, RzStrncat, /*hasN=*/true);
     }
 
     errs() << "[redzone] instrumented " << checks << " access(es) (skipped "
