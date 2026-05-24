@@ -41,6 +41,7 @@ CASES=(
   "strcpy_overflow.c:heap-buffer-overflow"
   "strcat_overflow.c:heap-buffer-overflow"
   "strncpy_overflow.c:heap-buffer-overflow"
+  "strlcpy_overflow.c:heap-buffer-overflow"
   "str_valid.c:OK"
   "global_overflow.c:global-buffer-overflow"
   "extern_global_valid.c:OK"

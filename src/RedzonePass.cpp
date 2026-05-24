@@ -152,6 +152,11 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         "__redzone_strncpy", PtrTy, PtrTy, PtrTy, I64, PtrTy, I32);
     FunctionCallee RzStrncat = M.getOrInsertFunction(
         "__redzone_strncat", PtrTy, PtrTy, PtrTy, I64, PtrTy, I32);
+    // strlcpy/strlcat return size_t, not the destination pointer.
+    FunctionCallee RzStrlcpy = M.getOrInsertFunction(
+        "__redzone_strlcpy", I64, PtrTy, PtrTy, I64, PtrTy, I32);
+    FunctionCallee RzStrlcat = M.getOrInsertFunction(
+        "__redzone_strlcat", I64, PtrTy, PtrTy, I64, PtrTy, I32);
     FunctionCallee GlobalRegister =
         M.getOrInsertFunction("__redzone_global_register", VoidTy, PtrTy, I64);
     FunctionCallee GlobalRegisterRight = M.getOrInsertFunction(
@@ -367,7 +372,7 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       // String copies: 2-arg (strcpy/strcat) and 3-arg (strncpy/strncat), plus
       // their fortified __*_chk forms.
       SmallVector<CallInst *, 4> strCpyCalls, strCatCalls, strNCpyCalls,
-          strNCatCalls;
+          strNCatCalls, strlCpyCalls, strlCatCalls;
       SmallVector<AllocaInst *, 8> allocas;
       SmallVector<ReturnInst *, 4> returns;
 
@@ -403,6 +408,10 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
                 strNCpyCalls.push_back(CI);
               else if (N == "strncat" || N == "__strncat_chk")
                 strNCatCalls.push_back(CI);
+              else if (N == "strlcpy" || N == "__strlcpy_chk")
+                strlCpyCalls.push_back(CI);
+              else if (N == "strlcat" || N == "__strlcat_chk")
+                strlCatCalls.push_back(CI);
               else if (N == "calloc")
                 callocCalls.push_back(CI);
               else if (N == "realloc")
@@ -734,6 +743,10 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         redirectStr(CI, RzStrncpy, /*hasN=*/true);
       for (CallInst *CI : strNCatCalls)
         redirectStr(CI, RzStrncat, /*hasN=*/true);
+      for (CallInst *CI : strlCpyCalls)
+        redirectStr(CI, RzStrlcpy, /*hasN=*/true);
+      for (CallInst *CI : strlCatCalls)
+        redirectStr(CI, RzStrlcat, /*hasN=*/true);
     }
 
     errs() << "[redzone] instrumented " << checks << " access(es) (skipped "

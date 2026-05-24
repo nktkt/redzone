@@ -964,6 +964,32 @@ char *__redzone_strncat(char *dst, const char *src, size_t n, const char *file,
   return strncat(dst, src, n);
 }
 
+// strlcpy/strlcat (BSD): size-bounded, but an oversized `n` still overflows. We
+// check exactly the bytes they actually write -- min(strlen(src)+1, n) for
+// strlcpy -- so a large `n` with a short source (which writes little) is not
+// flagged, while a genuine overflow is.
+size_t __redzone_strlcpy(char *dst, const char *src, size_t n, const char *file,
+                         int line) {
+  size_t sl = strlen(src);
+  __redzone_check(src, sl + 1, /*is_write=*/0, file, line);
+  size_t wrote = (n == 0) ? 0 : (sl + 1 <= n ? sl + 1 : n);
+  if (wrote)
+    __redzone_check(dst, wrote, /*is_write=*/1, file, line);
+  return strlcpy(dst, src, n);
+}
+
+size_t __redzone_strlcat(char *dst, const char *src, size_t n, const char *file,
+                         int line) {
+  size_t sl = strlen(src);
+  __redzone_check(src, sl + 1, /*is_write=*/0, file, line);
+  size_t dl = strnlen(dst, n); // strlcat appends after dst's existing contents
+  size_t avail = (dl < n) ? n - dl : 0;
+  size_t wrote = (avail == 0) ? 0 : (sl + 1 <= avail ? sl + 1 : avail);
+  if (wrote)
+    __redzone_check((char *)dst + dl, wrote, /*is_write=*/1, file, line);
+  return strlcat(dst, src, n);
+}
+
 //===----------------------------------------------------------------------===//
 // Leak suppressions
 //===----------------------------------------------------------------------===//

@@ -71,6 +71,11 @@ char *__redzone_strncpy(char *dst, const char *src, size_t n, const char *file,
                         int line);
 char *__redzone_strncat(char *dst, const char *src, size_t n, const char *file,
                         int line);
+// strlcpy / strlcat (BSD) return the total length they tried to build (size_t).
+size_t __redzone_strlcpy(char *dst, const char *src, size_t n, const char *file,
+                         int line);
+size_t __redzone_strlcat(char *dst, const char *src, size_t n, const char *file,
+                         int line);
 
 // Poison/unpoison the red zones around an enlarged stack allocation. The pass
 // calls __redzone_stack_enter at function entry and __redzone_stack_leave
