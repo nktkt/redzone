@@ -64,6 +64,10 @@ Make it correct and fast enough to point at real code.
 - **Performance budget** — target ≤ 2–3× slowdown; track memory overhead.
 
 **Exit criteria:** runs cleanly and usefully on a mid-size open-source C project.
+🟡 First validation: redzone builds and runs **[cJSON](https://github.com/DaveGamble/cJSON)**
+(~3.2k LOC) clean across a full parse/mutate/serialize/free workload, and catches
+an injected overflow on its heap. Dog-fooding it surfaced (and fixed) the need to
+redirect *indirect* allocators reached through function pointers.
 
 ## Horizon 3 — Developer experience & tooling · `v0.7`–`v0.9`
 

@@ -9,7 +9,17 @@ development milestones that led to it (the commit history references them).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **Indirect-allocator coverage**: allocations made through a function pointer —
+  the common pluggable-allocator pattern of taking the *address* of `malloc` and
+  calling it via a hook table — are now tracked. The pass substitutes a
+  malloc-compatible wrapper for an address-taken `malloc`/`calloc`/`realloc` (and
+  `free`), so blocks allocated indirectly get red zones like direct ones;
+  previously only direct `malloc(...)` call sites were redirected. Found by
+  dog-fooding redzone on [cJSON](https://github.com/DaveGamble/cJSON) (whose
+  hooks default to `{ malloc, free, realloc }`): redzone now both runs clean on a
+  full parse/mutate/serialize workload and catches an injected overflow on
+  cJSON's heap. Verified by `examples/indirect_malloc.c`.
 
 ## [0.23.0] — 2026-05-24
 
