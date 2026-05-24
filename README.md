@@ -13,6 +13,7 @@ The name comes from the *red zones*: poisoned guard regions placed around every 
 | Detected ✅ | Out of scope (for now) ❌ |
 |---|---|
 | Heap buffer overflow (read/write past a `malloc`'d region) | Underflow of an *external* global |
+| Overflow / use-after-free via `memcpy`/`memmove`/`memset` | |
 | Stack buffer overflow (past a fixed-size local) | |
 | Global buffer overflow (static/internal **and** external globals) | |
 | Use-after-free (read/write after a region is freed) | |
