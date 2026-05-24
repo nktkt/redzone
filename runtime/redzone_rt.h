@@ -109,6 +109,17 @@ void __redzone_stack_leave(void *base, size_t user_size);
 void __redzone_global_register(void *data, size_t size);
 void __redzone_global_register_right(void *data, size_t size);
 
+// Whole-process interposition support (see runtime/redzone_interpose.c). A
+// dyld-interposed `malloc`/`free`/... routes every allocation in the process
+// (including uninstrumented libraries) through redzone. __redzone_owns reports
+// whether a pointer is a redzone block, so the interposer can forward foreign
+// pointers to the real allocator (rz_sys_realloc / rz_sys_free) instead of
+// erroring. These call the system allocator directly, bypassing the interpose.
+int __redzone_owns(const void *ptr);
+size_t __redzone_usable_size(const void *ptr);
+void *rz_sys_realloc(void *ptr, size_t size);
+void rz_sys_free(void *ptr);
+
 #ifdef __cplusplus
 }
 #endif
