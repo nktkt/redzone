@@ -31,6 +31,11 @@ jobs:
         # and runs every example, asserting the expected outcome.
         run: ./scripts/test.sh
 
+      - name: Differential test vs AddressSanitizer
+        # Build a curated subset of the corpus with -fsanitize=address and assert
+        # ASan reaches the same verdict redzone does (test.sh locks redzone's).
+        run: ./scripts/test_diff_asan.sh
+
       - name: Validate machine-readable output formats
         # test_formats.sh re-builds the examples into a temp dir and checks that
         # REDZONE_FORMAT=json / =sarif emit well-formed findings with the right
