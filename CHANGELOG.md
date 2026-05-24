@@ -9,7 +9,34 @@ development milestones that led to it (the commit history references them).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.21.0] — 2026-05-24
+
+Adds an experimental **data-race detector** alongside the existing memory-safety
+checker, plus the last allocator-coverage gap. The default (memory-safety) mode
+and its ABI are unchanged; race detection is a separate, opt-in mode.
+
 ### Added
+- **Experimental data-race detection** (opt-in `--race` mode): a happens-before
+  (vector-clock) detector — the model ThreadSanitizer uses — that finds **data
+  races**: two accesses to the same location from different threads, at least one
+  a write, with no synchronization ordering them. It is a separate, heavier mode
+  with its own runtime (`runtime/redzone_race*.c`); the memory-safety checker is
+  unaffected. Run it with `scripts/redzone run --race <src.c>`; a race prints both
+  conflicting accesses with `file:line` and the process exits nonzero. It models
+  the happens-before edges from `pthread_create`/`join`, mutexes (including
+  `trylock`), reader/writer locks, condition variables (`pthread_cond_wait`/
+  `timedwait`), and C/C++ **atomics** (loads/stores, `atomicrmw`, `cmpxchg`),
+  designed around a strict **no-false-positives** rule — unmodeled orderings are
+  over-approximated, which can only ever miss a race, never invent one. Validated
+  end-to-end (`scripts/test_race_e2e.sh`), with a real-thread runtime test
+  (`scripts/test_race_runtime.sh`), and a deterministic engine unit test
+  (`scripts/test_race_engine.sh`), all in CI. See the README "Data-race
+  detection" section and
+  [`docs/design/data-race-detection.md`](docs/design/data-race-detection.md).
+  *Limitations:* barriers, semaphores, `pthread_once`, and standalone fences
+  (`atomic_thread_fence`) are not yet modeled.
 - **C++17 aligned `new`/`delete`** coverage: the over-aligned `operator new` /
   `new[]` (`size, std::align_val_t`) are redirected to the aligned allocator, and
   the aligned `operator delete` / `delete[]` forms (plain and sized) to the
