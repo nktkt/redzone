@@ -33,6 +33,7 @@
 
 #include <dlfcn.h>    // dladdr, to locate a frame's module for symbolization
 #include <errno.h>
+#include <stdarg.h>  // va_list, for the *printf wrappers
 #include <execinfo.h> // backtrace / backtrace_symbols for stack traces
 #include <pthread.h>  // serialize allocation-table access across threads
 #include <stdint.h>
@@ -988,6 +989,47 @@ size_t __redzone_strlcat(char *dst, const char *src, size_t n, const char *file,
   if (wrote)
     __redzone_check((char *)dst + dl, wrote, /*is_write=*/1, file, line);
   return strlcat(dst, src, n);
+}
+
+//===----------------------------------------------------------------------===//
+// Formatted output (sprintf / snprintf).
+//
+// The output length isn't known until the format is expanded, so we measure it
+// with vsnprintf(NULL, 0, ...) on a copy of the varargs, bounds-check the bytes
+// that will actually be written, then perform the real call. snprintf is bounded
+// by `n` (writes min(len+1, n)); sprintf is unbounded (writes len+1).
+//===----------------------------------------------------------------------===//
+
+int __redzone_snprintf(char *dst, size_t n, const char *file, int line,
+                       const char *fmt, ...) {
+  va_list ap, ap2;
+  va_start(ap, fmt);
+  va_copy(ap2, ap);
+  int len = vsnprintf(NULL, 0, fmt, ap); // bytes the format would produce
+  va_end(ap);
+  if (len >= 0) {
+    size_t want = (size_t)len + 1;
+    size_t wrote = (n == 0) ? 0 : (want <= n ? want : n);
+    if (wrote)
+      __redzone_check(dst, wrote, /*is_write=*/1, file, line);
+  }
+  int r = vsnprintf(dst, n, fmt, ap2);
+  va_end(ap2);
+  return r;
+}
+
+int __redzone_sprintf(char *dst, const char *file, int line, const char *fmt,
+                      ...) {
+  va_list ap, ap2;
+  va_start(ap, fmt);
+  va_copy(ap2, ap);
+  int len = vsnprintf(NULL, 0, fmt, ap);
+  va_end(ap);
+  if (len >= 0)
+    __redzone_check(dst, (size_t)len + 1, /*is_write=*/1, file, line);
+  int r = vsnprintf(dst, (size_t)-1, fmt, ap2); // unbounded write, already checked
+  va_end(ap2);
+  return r;
 }
 
 //===----------------------------------------------------------------------===//

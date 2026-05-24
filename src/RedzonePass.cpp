@@ -157,6 +157,13 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         "__redzone_strlcpy", I64, PtrTy, PtrTy, I64, PtrTy, I32);
     FunctionCallee RzStrlcat = M.getOrInsertFunction(
         "__redzone_strlcat", I64, PtrTy, PtrTy, I64, PtrTy, I32);
+    // Variadic formatted-output wrappers: (dst[, n], file, line, fmt, ...).
+    FunctionCallee RzSnprintf = M.getOrInsertFunction(
+        "__redzone_snprintf",
+        FunctionType::get(I32, {PtrTy, I64, PtrTy, I32, PtrTy}, /*vararg=*/true));
+    FunctionCallee RzSprintf = M.getOrInsertFunction(
+        "__redzone_sprintf",
+        FunctionType::get(I32, {PtrTy, PtrTy, I32, PtrTy}, /*vararg=*/true));
     FunctionCallee GlobalRegister =
         M.getOrInsertFunction("__redzone_global_register", VoidTy, PtrTy, I64);
     FunctionCallee GlobalRegisterRight = M.getOrInsertFunction(
@@ -373,6 +380,9 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
       // their fortified __*_chk forms.
       SmallVector<CallInst *, 4> strCpyCalls, strCatCalls, strNCpyCalls,
           strNCatCalls, strlCpyCalls, strlCatCalls;
+      // Formatted output, split by form so the redirect knows the arg layout.
+      SmallVector<CallInst *, 4> snprintfCalls, snprintfChkCalls, sprintfCalls,
+          sprintfChkCalls;
       SmallVector<AllocaInst *, 8> allocas;
       SmallVector<ReturnInst *, 4> returns;
 
@@ -412,6 +422,14 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
                 strlCpyCalls.push_back(CI);
               else if (N == "strlcat" || N == "__strlcat_chk")
                 strlCatCalls.push_back(CI);
+              else if (N == "snprintf")
+                snprintfCalls.push_back(CI);
+              else if (N == "__snprintf_chk")
+                snprintfChkCalls.push_back(CI);
+              else if (N == "sprintf")
+                sprintfCalls.push_back(CI);
+              else if (N == "__sprintf_chk")
+                sprintfChkCalls.push_back(CI);
               else if (N == "calloc")
                 callocCalls.push_back(CI);
               else if (N == "realloc")
@@ -747,6 +765,39 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         redirectStr(CI, RzStrlcpy, /*hasN=*/true);
       for (CallInst *CI : strlCatCalls)
         redirectStr(CI, RzStrlcat, /*hasN=*/true);
+
+      // Formatted output: rebuild the variadic call as
+      // (dst[, n], file, line, fmt, ...). `hasN` forwards arg 1 as the size
+      // (snprintf); `tailStart` is the index of the format string (skipping any
+      // __*_chk flag/objsize args, which the wrapper doesn't need).
+      auto redirectPrintf = [&](CallInst *CI, FunctionCallee Fn, bool hasN,
+                                unsigned tailStart) {
+        IRBuilder<> B(CI);
+        auto [FileC, LineC] = getLoc(B, CI);
+        SmallVector<Value *, 8> args;
+        args.push_back(CI->getArgOperand(0)); // dst
+        if (hasN)
+          args.push_back(i64Len(B, CI->getArgOperand(1))); // n
+        args.push_back(FileC);
+        args.push_back(LineC);
+        for (unsigned i = tailStart; i < CI->arg_size(); i++)
+          args.push_back(CI->getArgOperand(i)); // fmt + varargs
+        CallInst *NewCI = B.CreateCall(Fn, args);
+        NewCI->takeName(CI);
+        CI->replaceAllUsesWith(NewCI);
+        CI->eraseFromParent();
+        ++memops;
+      };
+      // snprintf(dst, n, fmt, ...) / __snprintf_chk(dst, n, flag, objsize, fmt, ...)
+      for (CallInst *CI : snprintfCalls)
+        redirectPrintf(CI, RzSnprintf, /*hasN=*/true, /*tailStart=*/2);
+      for (CallInst *CI : snprintfChkCalls)
+        redirectPrintf(CI, RzSnprintf, /*hasN=*/true, /*tailStart=*/4);
+      // sprintf(dst, fmt, ...) / __sprintf_chk(dst, flag, objsize, fmt, ...)
+      for (CallInst *CI : sprintfCalls)
+        redirectPrintf(CI, RzSprintf, /*hasN=*/false, /*tailStart=*/1);
+      for (CallInst *CI : sprintfChkCalls)
+        redirectPrintf(CI, RzSprintf, /*hasN=*/false, /*tailStart=*/3);
     }
 
     errs() << "[redzone] instrumented " << checks << " access(es) (skipped "
