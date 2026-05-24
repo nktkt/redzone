@@ -9,6 +9,14 @@ development milestones that led to it (the commit history references them).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.23.0] — 2026-05-24
+
+Completes the library-function overflow coverage started in `0.22.0` with the
+formatted-output functions, and adds differential testing against
+AddressSanitizer. Additive; no behavior change for in-bounds code.
+
 ### Added
 - **Formatted-output bounds checking**: `sprintf` and `snprintf` (and their
   fortified `__sprintf_chk` / `__snprintf_chk` forms) are intercepted. Because the
@@ -19,6 +27,12 @@ development milestones that led to it (the commit history references them).
   too-small buffer is now caught. Verified by `examples/sprintf_overflow.c`,
   `examples/snprintf_overflow.c`, and `examples/printf_valid.c`. (The `va_list`
   variants `vsprintf`/`vsnprintf` are not intercepted.)
+- **Differential testing against AddressSanitizer** in CI
+  (`scripts/test_diff_asan.sh`): a curated subset of the corpus is built with
+  `-fsanitize=address` and ASan must reach the same verdict redzone does — they
+  agree on every case. (It also showed redzone catching a `strlcpy` overflow that
+  macOS ASan misses, since ASan has no `strlcpy` interceptor there.)
+- A **getting-started [tutorial](docs/tutorial.md)**, linked from the README.
 
 ## [0.22.0] — 2026-05-24
 
