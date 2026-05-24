@@ -123,6 +123,25 @@ Implication: race detection should be a **distinct mode**, selected at build tim
 two modes can share the pass's instrumentation walk and selective-skip analysis,
 but little else.
 
+**Measured (current implementation).** `scripts/bench_race.sh` times race-free
+microbenchmarks, baseline vs. instrumented, both at `-O1`:
+
+| benchmark | what it stresses | slowdown |
+|---|---|---|
+| `race_serial` | per-access cost, single thread (no contention) | ~11× |
+| `race_contended` | 4 threads on disjoint, padded slots | ~29× |
+
+The roughly **2.5× gap** between them is **lock contention**: the runtime
+currently takes one *global* mutex on every instrumented access, so threads
+serialize even when they touch unrelated locations. That single lock — not the
+happens-before math — is the dominant cost at scale, and the clear next
+optimization is to **shard the shadow lock** (independent sub-tables + per-shard
+locks, routed by address) so disjoint accesses proceed in parallel; the
+per-thread clock is already thread-local and needs no lock, and the sync/thread
+registries can keep their own locks. (The benchmarks are race-free, so the script
+also doubles as a correctness gate: the instrumented build must match the
+baseline output and report no race.)
+
 ## Risks & open questions
 
 - **Completeness of sync interception** is the correctness bottleneck (any gap →
