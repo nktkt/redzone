@@ -617,6 +617,21 @@ void *__redzone_malloc(size_t size, const char *file, int line) {
   return rz_allocate(size, REDZONE_SIZE, file, line);
 }
 
+// malloc-compatible wrappers (no file/line). The pass substitutes these for the
+// ADDRESS of malloc/calloc/realloc when the allocator is called indirectly
+// through a function pointer (e.g. cJSON's pluggable hooks), so those
+// allocations are still red-zoned. __redzone_free already matches free's
+// signature, so address-of free needs no separate wrapper.
+void *__redzone_malloc_plain(size_t size) {
+  return __redzone_malloc(size, NULL, 0);
+}
+void *__redzone_calloc_plain(size_t nmemb, size_t size) {
+  return __redzone_calloc(nmemb, size, NULL, 0);
+}
+void *__redzone_realloc_plain(void *ptr, size_t size) {
+  return __redzone_realloc(ptr, size, NULL, 0);
+}
+
 // aligned_alloc(alignment, size): like malloc but the user pointer is aligned to
 // `alignment`. We honor any alignment >= REDZONE_SIZE; smaller (but valid) ones
 // are rounded up to REDZONE_SIZE, which still satisfies the request and leaves

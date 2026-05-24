@@ -236,6 +236,7 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
 
     unsigned checks = 0, mallocs = 0, frees = 0, stackVars = 0, globals = 0;
     unsigned skippedSafe = 0, skippedRedundant = 0, optedOutFns = 0, memops = 0;
+    unsigned allocPtrs = 0; // address-taken allocators redirected to wrappers
 
     // Ignore-list: exclude functions/source files matching REDZONE_IGNORELIST
     // rules (like the per-function attribute, but for code you can't annotate).
@@ -800,14 +801,43 @@ struct RedzonePass : PassInfoMixin<RedzonePass> {
         redirectPrintf(CI, RzSprintf, /*hasN=*/false, /*tailStart=*/3);
     }
 
+    // Any allocator use that survives the per-function loop is the allocator's
+    // ADDRESS being taken (stored in a function-pointer table and called
+    // indirectly -- e.g. cJSON's pluggable hooks `{ malloc, free, realloc }`),
+    // which the call-site redirection above can't see. Replace those remaining
+    // uses with malloc-compatible wrappers so indirectly-allocated blocks are
+    // still red-zoned. Direct calls were already rewritten, so only value uses
+    // are left; the wrapper takes the allocator's own type so the replacement is
+    // type-correct.
+    {
+      struct PtrRedir {
+        const char *name, *wrapper;
+      };
+      static const PtrRedir kAllocPtr[] = {
+          {"malloc", "__redzone_malloc_plain"},
+          {"calloc", "__redzone_calloc_plain"},
+          {"realloc", "__redzone_realloc_plain"},
+          {"free", "__redzone_free"}, // already matches free's signature
+      };
+      for (const PtrRedir &R : kAllocPtr) {
+        Function *AF = M.getFunction(R.name);
+        if (!AF || AF->use_empty())
+          continue;
+        FunctionCallee W = M.getOrInsertFunction(R.wrapper, AF->getFunctionType());
+        AF->replaceAllUsesWith(W.getCallee());
+        ++allocPtrs;
+      }
+    }
+
     errs() << "[redzone] instrumented " << checks << " access(es) (skipped "
            << skippedSafe << " safe + " << skippedRedundant << " redundant); "
            << stackVars << " stack var(s); " << globals << " global(s); redirected "
            << mallocs << " alloc / " << frees << " free call(s) / " << memops
-           << " mem op(s); " << optedOutFns << " opted-out fn(s)\n";
+           << " mem op(s) / " << allocPtrs << " alloc-ptr(s); " << optedOutFns
+           << " opted-out fn(s)\n";
 
-    bool Changed =
-        checks || mallocs || frees || stackVars || globals || memops;
+    bool Changed = checks || mallocs || frees || stackVars || globals || memops ||
+                   allocPtrs;
     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
   }
 

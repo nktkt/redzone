@@ -35,6 +35,7 @@ CASES=(
   "stack_inbounds_then_oob.c:stack-buffer-overflow"
   "calloc_overflow.c:heap-buffer-overflow"
   "realloc_grow.c:OK"
+  "indirect_malloc.c:heap-buffer-overflow"
   "memcpy_overflow.c:heap-buffer-overflow"
   "memset_overflow.c:heap-buffer-overflow"
   "memcpy_valid.c:OK"

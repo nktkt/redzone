@@ -40,6 +40,14 @@ void __redzone_free(void *ptr);
 // points -- the pass redirects them to __redzone_malloc/__redzone_free.
 void *__redzone_aligned_alloc(size_t alignment, size_t size, const char *file,
                               int line);
+
+// malloc-compatible wrappers (no file/line) the pass substitutes for the ADDRESS
+// of malloc/calloc/realloc when the allocator is invoked indirectly through a
+// function pointer, so indirectly-allocated blocks are still tracked. (free's
+// signature already matches __redzone_free, so it needs no wrapper.)
+void *__redzone_malloc_plain(size_t size);
+void *__redzone_calloc_plain(size_t nmemb, size_t size);
+void *__redzone_realloc_plain(void *ptr, size_t size);
 int __redzone_posix_memalign(void **memptr, size_t alignment, size_t size,
                              const char *file, int line);
 
