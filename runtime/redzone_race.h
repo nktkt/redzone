@@ -91,11 +91,16 @@ typedef struct {
 } rz_bucket;
 
 typedef struct {
-  rz_bucket *buckets; // RZ_RACE_BUCKETS entries, owned
+  rz_bucket *buckets; // `nbuckets` entries, owned
+  size_t nbuckets;    // table size (a power of two, for masking)
   int next_tid;       // next thread id to hand out
 } rz_race_state;
 
-int rz_race_state_init(rz_race_state *s);    // 0 on success, -1 on OOM
+int rz_race_state_init(rz_race_state *s);    // RZ_RACE_BUCKETS; 0 ok, -1 OOM
+// As above but with an explicit table size (must be a power of two). The runtime
+// shards the shadow into several smaller states so threads accessing unrelated
+// locations don't contend on one lock.
+int rz_race_state_init_n(rz_race_state *s, size_t nbuckets);
 void rz_race_state_destroy(rz_race_state *s);
 
 // Register the initial thread (e.g. main). Assigns a tid and starts its clock.
