@@ -313,8 +313,11 @@ integration, and a 28-case suite plus format, cross-TU, report, opt-out,
 ignore-list, determinism, ccache, sccache, integration, performance-regression,
 and data-race (engine, runtime, and end-to-end) checks in CI. It also has an
 opt-in, experimental **[data-race detector](#data-race-detection)** (`--race`
-mode, happens-before). Remaining gaps: underflow of an external global, and
-performance tuning of the race mode.
+mode, happens-before). Its verdicts are validated by **differential testing
+against AddressSanitizer** and by **dog-fooding on real libraries** (cJSON, inih,
+stb_ds) — see [`docs/real-world-validation.md`](docs/real-world-validation.md).
+Remaining gaps: underflow of an external global, and performance tuning of the
+race mode.
 
 Performance: the per-access check is **inlined** over a **direct-mapped shadow**,
 the allocator path is **O(1)** per `malloc`/`free` (each block finds its metadata
