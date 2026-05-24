@@ -157,9 +157,12 @@ From a tool to a platform.
 
 Run alongside every horizon, not in sequence.
 
-- **Testing & correctness** — golden corpus of bad/good programs; track
-  false-positive / false-negative rates; differential testing against real
-  AddressSanitizer.
+- 🟡 **Testing & correctness** — golden corpus of bad/good programs (the
+  `examples/` suite); track false-positive / false-negative rates. **Differential
+  testing against real AddressSanitizer** is wired into CI (`scripts/test_diff_asan.sh`):
+  a curated subset is built with `-fsanitize=address` and ASan must reach the same
+  verdict redzone does. (It surfaced that redzone catches a `strlcpy` overflow
+  macOS ASan misses — ASan has no `strlcpy` interceptor there.)
 - ✅ **Benchmarking** — `scripts/bench.sh` measures instrumented-vs-baseline
   overhead (`docs/benchmarks.md`); `--check` mode runs in CI as a regression gate
   (static check-count budgets + loose slowdown ceilings).
