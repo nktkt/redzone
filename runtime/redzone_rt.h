@@ -77,6 +77,15 @@ size_t __redzone_strlcpy(char *dst, const char *src, size_t n, const char *file,
 size_t __redzone_strlcat(char *dst, const char *src, size_t n, const char *file,
                          int line);
 
+// Formatted-output wrappers. The pass redirects snprintf/sprintf (and their
+// __*_chk forms) here, inserting file/line before the format string. They
+// measure the output length, bounds-check the destination, then do the real
+// write. (va_list variants vsnprintf/vsprintf are not intercepted.)
+int __redzone_snprintf(char *dst, size_t n, const char *file, int line,
+                       const char *fmt, ...);
+int __redzone_sprintf(char *dst, const char *file, int line, const char *fmt,
+                      ...);
+
 // Poison/unpoison the red zones around an enlarged stack allocation. The pass
 // calls __redzone_stack_enter at function entry and __redzone_stack_leave
 // before each return. `base` points at the enlarged allocation; `user_size` is

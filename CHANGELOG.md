@@ -9,7 +9,16 @@ development milestones that led to it (the commit history references them).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **Formatted-output bounds checking**: `sprintf` and `snprintf` (and their
+  fortified `__sprintf_chk` / `__snprintf_chk` forms) are intercepted. Because the
+  output length isn't known until the format expands, the wrapper measures it with
+  `vsnprintf(NULL, 0, ...)` on a copy of the varargs, bounds-checks the bytes that
+  will actually be written (`len+1` for `sprintf`; `min(len+1, n)` for
+  `snprintf`), then performs the real write. An overflow such as `sprintf` into a
+  too-small buffer is now caught. Verified by `examples/sprintf_overflow.c`,
+  `examples/snprintf_overflow.c`, and `examples/printf_valid.c`. (The `va_list`
+  variants `vsprintf`/`vsnprintf` are not intercepted.)
 
 ## [0.22.0] — 2026-05-24
 
