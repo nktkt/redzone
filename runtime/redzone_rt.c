@@ -55,7 +55,7 @@
 // into itself. On macOS the default malloc zone is reached through a function
 // pointer the interpose doesn't replace; elsewhere plain malloc is fine (no
 // interpose). These are equivalent to malloc/realloc/free in normal builds.
-static void *rz_sys_malloc(size_t n) {
+void *rz_sys_malloc(size_t n) {
 #if defined(__APPLE__)
   return malloc_zone_malloc(malloc_default_zone(), n);
 #else
@@ -117,8 +117,28 @@ static size_t g_cap = 0;
 // 16-aligned blocks never share an 8-byte shadow chunk. The inlined per-access
 // fast path therefore stays lock-free; only the allocator/error paths lock.
 static pthread_mutex_t g_table_lock = PTHREAD_MUTEX_INITIALIZER;
-#define TABLE_LOCK() pthread_mutex_lock(&g_table_lock)
-#define TABLE_UNLOCK() pthread_mutex_unlock(&g_table_lock)
+
+// Re-entrancy guard for whole-process interposition. While this thread holds the
+// table lock, runtime-internal code may call libc functions (e.g.
+// backtrace_symbols on the error path) that allocate; under interposition those
+// allocations would re-enter the interposed malloc and try to take the table
+// lock again -> deadlock. So raise this per-thread counter across every locked
+// section; the interposer (runtime/redzone_interpose.c) reads it via
+// __redzone_in_runtime() and forwards any re-entrant allocation straight to the
+// system allocator instead. Harmless (always 0) in non-interposed builds.
+static _Thread_local int g_in_runtime = 0;
+int __redzone_in_runtime(void) { return g_in_runtime; }
+
+#define TABLE_LOCK()                                                            \
+  do {                                                                         \
+    pthread_mutex_lock(&g_table_lock);                                         \
+    g_in_runtime++;                                                            \
+  } while (0)
+#define TABLE_UNLOCK()                                                          \
+  do {                                                                         \
+    g_in_runtime--;                                                            \
+    pthread_mutex_unlock(&g_table_lock);                                       \
+  } while (0)
 
 // O(1) back-reference stashed in each heap block's left red zone, so free() and
 // realloc() can recover the block's metadata directly from the user pointer
@@ -289,6 +309,17 @@ int __redzone_owns(const void *ptr) {
   int owned = block_from_user_ptr((void *)ptr) != NULL;
   TABLE_UNLOCK();
   return owned;
+}
+
+// Lock-free, conservative ownership pre-check: 1 if `ptr` *might* be a redzone
+// block, 0 if it definitely is not. Reads only the shadow (no table lock), so it
+// is safe to call re-entrantly (while the table lock is held). The interposer
+// uses it on its re-entrant free path, where taking the lock would deadlock.
+int __redzone_maybe_owns(const void *ptr) {
+  uintptr_t u = (uintptr_t)ptr;
+  if (u < sizeof(Header))
+    return 0;
+  return shadow_load(u - 8) == RZ_POISON;
 }
 
 // The user-visible size of a redzone block (0 if we don't own `ptr`). The
@@ -1179,7 +1210,16 @@ static int is_unsuppressed_leak(const Block *b) {
 // never also reported as a leak.) This is a simple "never freed by exit" check;
 // reachability-aware leak analysis is a later refinement.
 
+// Leak reporting is disabled under whole-process interposition: there, every
+// allocation in the process (all of libsystem/dyld, never freed by design) is a
+// redzone block, so at exit they would all look leaked. The interposer turns
+// this off via __redzone_set_leak_report(0).
+static int g_leak_report = 1;
+void __redzone_set_leak_report(int on) { g_leak_report = on; }
+
 static void report_leaks(void) {
+  if (!g_leak_report)
+    return;
   load_suppressions();
   // Hold the table lock across the whole walk; a thread could still be running.
   // Every exit below either returns (after unlocking) or _Exit()s the process.

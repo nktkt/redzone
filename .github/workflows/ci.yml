@@ -36,6 +36,11 @@ jobs:
         # ASan reaches the same verdict redzone does (test.sh locks redzone's).
         run: ./scripts/test_diff_asan.sh
 
+      - name: Whole-process interposition (experimental, macOS)
+        # An overflow on memory from an UNINSTRUMENTED library is missed normally
+        # but caught under DYLD_INSERT_LIBRARIES; a correct program stays clean.
+        run: ./scripts/test_interpose.sh
+
       - name: Validate machine-readable output formats
         # test_formats.sh re-builds the examples into a temp dir and checks that
         # REDZONE_FORMAT=json / =sarif emit well-formed findings with the right

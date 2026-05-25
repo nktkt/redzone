@@ -116,7 +116,16 @@ void __redzone_global_register_right(void *data, size_t size);
 // pointers to the real allocator (rz_sys_realloc / rz_sys_free) instead of
 // erroring. These call the system allocator directly, bypassing the interpose.
 int __redzone_owns(const void *ptr);
+// Lock-free conservative variant (safe to call while the table lock is held).
+int __redzone_maybe_owns(const void *ptr);
 size_t __redzone_usable_size(const void *ptr);
+// Nonzero while this thread is inside a runtime locked section; the interposer
+// forwards re-entrant allocations to the system allocator to avoid deadlock.
+int __redzone_in_runtime(void);
+// Enable/disable the exit-time leak report (the interposer disables it, since
+// under whole-process interposition every live system allocation looks leaked).
+void __redzone_set_leak_report(int on);
+void *rz_sys_malloc(size_t size);
 void *rz_sys_realloc(void *ptr, size_t size);
 void rz_sys_free(void *ptr);
 

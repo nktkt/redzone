@@ -1,10 +1,63 @@
-# Design note: whole-process malloc interposition (feasibility spike)
+# Design note: whole-process malloc interposition
 
-Status: **experimental spike — not production-ready on macOS.** This note records
-what was tried, what works, the blocker, and the path forward. The code lives in
-`runtime/redzone_interpose.c` (+ the `rz_sys_*` / `__redzone_owns` /
-`__redzone_usable_size` runtime support); nothing in the normal build, test, or
-CI flow links it.
+Status: **experimental, working on macOS** (`scripts/test_interpose.sh`, in CI;
+the default compile-time mode is unaffected). An overflow on memory allocated by
+an *uninstrumented* library — invisible to a normal build — is caught once the
+process is run under the interposer; a correct program runs clean. Code:
+`runtime/redzone_interpose.c` + the `rz_sys_*` / `__redzone_owns` /
+`__redzone_maybe_owns` / `__redzone_usable_size` / `__redzone_in_runtime` /
+`__redzone_set_leak_report` runtime support. Not yet wired into the `redzone` CLI
+(run it by hand, below).
+
+## How to use
+
+```sh
+clang -O2 -dynamiclib runtime/redzone_rt.c \
+    -install_name @rpath/libredzone_rt.dylib -o libredzone_rt.dylib
+clang -O2 -dynamiclib runtime/redzone_interpose.c -L. -lredzone_rt \
+    -Wl,-rpath,. -install_name @rpath/libredzone_interpose.dylib \
+    -o libredzone_interpose.dylib
+# build your program against libredzone_rt (instrument the parts you want checked
+# with the pass, as usual), then:
+DYLD_INSERT_LIBRARIES=./libredzone_interpose.dylib ./your_program
+```
+
+## What it took (the three problems, and the fixes)
+
+The naive "interpose `malloc`, register a zone" approach crashed on startup. Three
+fixes, each a small increment, made it work:
+
+1. **Startup introspection** — macOS code (libobjc) calls `malloc_size()` /
+   `malloc_zone_from_ptr()` during very early image load, *before* any constructor
+   could register a zone; our offset user pointers then report size 0 → "corrupt
+   data pointer" abort. Fixed by **interposing the introspection functions
+   themselves** (active from load): a redzone block answers via
+   `__redzone_usable_size`, foreign pointers fall back to the real default zone.
+2. **Re-entrancy / deadlock** — the runtime holds its table lock and then calls
+   libc functions that allocate (e.g. `backtrace_symbols` on the error path);
+   under interposition that re-enters the interposed `malloc` and tries to take
+   the table lock again. Fixed with a per-thread guard (`__redzone_in_runtime`,
+   raised across every locked section): the interposer forwards any re-entrant
+   allocation straight to the system allocator (`rz_sys_*`), using the lock-free
+   `__redzone_maybe_owns` for the free path.
+3. **Exit-time false leaks** — under interposition every live process allocation
+   (all of libsystem) is a redzone block at exit, so the leak report would flag
+   them all. The interposer disables it (`__redzone_set_leak_report(0)`).
+
+Overhead is modest in practice (the test program runs in well under a second).
+
+## Remaining work / caveats
+
+- **CLI integration** — a `redzone run --interpose` mode that builds against the
+  runtime dylib and sets `DYLD_INSERT_LIBRARIES`.
+- **Re-entrant `realloc`/`free` of a redzone block** while the lock is held is
+  assumed not to occur (runtime-internal allocations are system blocks); a
+  redzone block there is leaked rather than mishandled.
+- **macOS only** (dyld `__interpose`). A Linux port would use symbol
+  interposition (`--wrap` or a preloaded `.so` with `dlsym(RTLD_NEXT)`).
+- Cross-process / leak detection under interposition is intentionally off.
+
+The analysis below records *why* the naive approach failed, for posterity.
 
 ## Goal
 
